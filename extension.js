@@ -1,4 +1,4 @@
-/*! Fetchy 0.2.0 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.3.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -255,7 +255,7 @@
     const id = typeof m.extension?.id === "string" ? m.extension.id : typeof m.extensionId === "string" ? m.extensionId : null;
     const name = typeof m.extension?.name === "string" ? m.extension.name : typeof m.extensionName === "string" ? m.extensionName : fallbackName;
     const prefix = `[${name}]`;
-    const log = {
+    const log2 = {
       debug: (...a) => (m.log?.debug ?? console.debug)(...m.log?.debug ? a : [prefix, ...a]),
       info: (...a) => (m.log?.info ?? console.info)(...m.log?.info ? a : [prefix, ...a]),
       warn: (...a) => (m.log?.warn ?? console.warn)(...m.log?.warn ? a : [prefix, ...a]),
@@ -266,7 +266,7 @@
     return {
       extensionId: id,
       extensionName: name,
-      log,
+      log: log2,
       fetch: pageFetch,
       storage: {
         async get() {
@@ -357,6 +357,132 @@
       const records = (await this.load()).filter((r) => r.id !== id);
       await this.save(records);
       return records;
+    }
+  };
+
+  // src/anchor.ts
+  var SECTION_ID = "settings-section-external-extensions";
+  var ANCHOR_BUTTON_ID = "me-fetchy-settings-button";
+  var BUTTON_STYLE = [
+    "display:flex",
+    "min-height:2.75rem",
+    "align-items:center",
+    "justify-content:center",
+    "gap:0.375rem",
+    "width:100%",
+    "border-radius:0.5rem",
+    "border:1px solid var(--border, #444)",
+    "background:var(--secondary, #2d2d3a)",
+    "color:var(--foreground, inherit)",
+    "padding:0 0.75rem",
+    "font:inherit",
+    "font-size:0.75rem",
+    "cursor:pointer"
+  ].join(";");
+  function findImportButtonRow(section) {
+    const firstButton = section.querySelector("button");
+    return firstButton?.parentElement ?? section;
+  }
+  function mountAnchor(doc, label, onOpen) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.id = ANCHOR_BUTTON_ID;
+    button.setAttribute("style", BUTTON_STYLE);
+    button.setAttribute("aria-haspopup", "dialog");
+    button.textContent = label;
+    button.addEventListener("click", onOpen);
+    button.addEventListener("mouseenter", () => {
+      button.style.background = "var(--accent, #383848)";
+    });
+    button.addEventListener("mouseleave", () => {
+      button.style.background = "var(--secondary, #2d2d3a)";
+    });
+    let scheduled = false;
+    const place = () => {
+      scheduled = false;
+      const section = doc.getElementById(SECTION_ID);
+      if (!section) {
+        button.remove();
+        return;
+      }
+      const row = findImportButtonRow(section);
+      if (button.parentElement !== row) row.appendChild(button);
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      (typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 16))(place);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(doc.body, { childList: true, subtree: true });
+    place();
+    return {
+      get attached() {
+        return button.isConnected;
+      },
+      destroy() {
+        observer.disconnect();
+        button.remove();
+      }
+    };
+  }
+
+  // src/audit.ts
+  var AUDIT_LIMIT = 200;
+  var KEY = "log";
+  var isRecord3 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  var str2 = (v) => typeof v === "string" ? v : null;
+  function parseSide(v) {
+    if (!isRecord3(v)) return null;
+    return { version: str2(v.version), hash: str2(v.hash), capabilities: Array.isArray(v.capabilities) ? v.capabilities.map(String) : [] };
+  }
+  function parseEntry(v) {
+    if (!isRecord3(v) || typeof v.at !== "string" || typeof v.action !== "string" || typeof v.name !== "string") return null;
+    return {
+      at: v.at,
+      action: v.action,
+      name: v.name,
+      result: v.result === "failed" || v.result === "refused" ? v.result : "ok",
+      extensionId: str2(v.extensionId),
+      source: str2(v.source),
+      ref: str2(v.ref),
+      from: parseSide(v.from),
+      to: parseSide(v.to),
+      detail: str2(v.detail)
+    };
+  }
+  function scrub(text) {
+    return text.replace(/x-admin-secret\s*[:=]\s*\S+/gi, "x-admin-secret: [redacted]").replace(/(authorization|token|secret|password)\s*[:=]\s*\S+/gi, "$1: [redacted]").slice(0, 300);
+  }
+  var AuditLog = class {
+    constructor(storage, now = () => /* @__PURE__ */ new Date()) {
+      this.storage = storage;
+      this.now = now;
+    }
+    storage;
+    now;
+    async list() {
+      const data = await this.storage.get();
+      const raw = Array.isArray(data[KEY]) ? data[KEY] : [];
+      return raw.map(parseEntry).filter((e) => e !== null);
+    }
+    /** Appends an entry (newest first) and drops the oldest beyond the limit. */
+    async record(entry) {
+      const full = { ...entry, at: entry.at ?? this.now().toISOString(), detail: entry.detail ? scrub(entry.detail) : null };
+      const list = [full, ...await this.list()].slice(0, AUDIT_LIMIT);
+      await this.storage.patch({ [KEY]: list });
+      return full;
+    }
+    async clear() {
+      await this.storage.patch({ [KEY]: [] });
+    }
+    /** Tab-separated text for export; one entry per line, newest first. */
+    static format(entries2) {
+      const side2 = (s) => s ? `v${s.version ?? "?"} ${s.hash ?? "-"} [${s.capabilities.join(",")}]` : "-";
+      return [
+        "at	action	result	extension	name	source	from	to	detail",
+        ...entries2.map((e) => [e.at, e.action, e.result, e.extensionId ?? "-", e.name, e.source ? `${e.source}${e.ref ? `@${e.ref}` : ""}` : "-", side2(e.from), side2(e.to), e.detail ?? ""].join("	"))
+      ].join("\n");
     }
   };
 
@@ -520,7 +646,11 @@
       if (p + 46 + nameLen > bytes.byteLength) fail("bad central directory");
       const name = names.decode(bytes.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/").replace(/^\/+/, "");
       if (offset + 30 + compressed > bytes.byteLength) fail(`${name} lies past the end of the file`);
-      if (name && !name.endsWith("/")) entries2.set(name, { name, method, compressed, size, crc, offset });
+      if (name && !name.endsWith("/")) {
+        if (entries2.has(name)) fail(`duplicate entry ${name}`);
+        if (/^(\.\.?)(\/|$)|\/\.\.(\/|$)/.test(name)) fail(`unsafe entry name ${name}`);
+        entries2.set(name, { name, method, compressed, size, crc, offset });
+      }
       p += 46 + nameLen + extraLen + commentLen;
     }
     return entries2;
@@ -1058,6 +1188,13 @@
     problem;
   };
   var sameSource = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  var sideOf = (x, hash) => x ? { version: x.version, hash: hash ?? x.contentHash ?? null, capabilities: [...x.capabilities] } : null;
+  async function log(deps, entry) {
+    try {
+      await deps.audit?.record(entry);
+    } catch {
+    }
+  }
   var sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
   var nowOf = (deps) => (deps.now ?? (() => /* @__PURE__ */ new Date()))();
   async function digest(draft, files) {
@@ -1085,6 +1222,8 @@
         editedInMarinara: tracked !== null && tracked.extensionId === record.id && tracked.installedHash !== record.contentHash,
         runtimeDiffers: record.runtime !== draft.runtime,
         nameDiffers: !sameName(record.name, draft.name),
+        capabilitiesAdded: draft.capabilities.filter((c) => !record.capabilities.includes(c)),
+        capabilitiesRemoved: record.capabilities.filter((c) => !draft.capabilities.includes(c)),
         changes: await compareCode(record, draft)
       }
     };
@@ -1137,6 +1276,27 @@
     }
   }
   async function install(prepared, deps, mode) {
+    const action = mode.kind === "create" ? "install" : mode.kind;
+    const base = {
+      action,
+      extensionId: mode.kind === "create" ? null : mode.extensionId,
+      name: prepared.draft.name,
+      source: prepared.input,
+      ref: prepared.pkg.ref,
+      from: sideOf(prepared.engine?.record ?? null),
+      to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash)
+    };
+    try {
+      const result = await installUnlogged(prepared, deps, mode);
+      await log(deps, { ...base, action: result.mode.kind === "create" ? "install" : result.mode.kind, extensionId: result.extension.id, result: "ok", detail: null, to: sideOf(result.extension) });
+      return result;
+    } catch (e) {
+      const refused = e instanceof InstallError;
+      await log(deps, { ...base, result: refused ? "refused" : "failed", detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+      throw e;
+    }
+  }
+  async function installUnlogged(prepared, deps, mode) {
     const now = nowOf(deps);
     const previous = prepared.tracked ?? (mode.kind !== "create" ? (await deps.store.load()).find((r) => r.extensionId === mode.extensionId) ?? null : null);
     if (mode.kind === "create") {
@@ -1193,6 +1353,19 @@
         { version: record.installedVersion, hash: record.installedHash },
         { version: pkg.normalized.draft.version, hash }
       );
+      if (state !== "up-to-date" && (record.latest?.hash !== hash || record.latest?.state !== state)) {
+        await log(deps, {
+          action: "check",
+          result: "ok",
+          extensionId: record.extensionId,
+          name: record.name,
+          source: record.input,
+          ref: record.ref,
+          from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] },
+          to: sideOf({ version: pkg.normalized.draft.version, capabilities: pkg.normalized.draft.capabilities }, hash),
+          detail: state
+        });
+      }
       return { ...record, lastCheckedAt: now, lastError: null, latest: { version: pkg.normalized.draft.version, hash, state, checkedAt: now } };
     } catch (e) {
       return { ...record, lastCheckedAt: now, lastError: e instanceof Error ? e.message : String(e) };
@@ -1238,7 +1411,14 @@
     return extension?.revisions ?? [];
   }
   async function rollbackSource(record, contentHash, deps) {
-    const extension = await deps.client.rollback(record.extensionId, contentHash);
+    let extension;
+    try {
+      extension = await deps.client.rollback(record.extensionId, contentHash);
+    } catch (e) {
+      await log(deps, { action: "rollback", result: "failed", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: { version: null, hash: contentHash, capabilities: [] }, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+    await log(deps, { action: "rollback", result: "ok", extensionId: extension.id, name: extension.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(extension), detail: null });
     const now = nowOf(deps).toISOString();
     const latest = record.latest ? { ...record.latest, state: updateState({ version: extension.version, hash: extension.contentHash }, { version: record.latest.version, hash: record.latest.hash }) } : null;
     const updated = { ...record, installedVersion: extension.version, installedHash: extension.contentHash, installedAt: now, latest };
@@ -1246,14 +1426,45 @@
     return { record: updated, extension };
   }
   async function forgetSource(record, deps, deleteFromEngine) {
+    const entry = { action: deleteFromEngine ? "delete" : "forget", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: null };
     if (deleteFromEngine) {
       try {
         await deps.client.remove(record.extensionId);
       } catch (e) {
-        if (!(e instanceof EngineApiError && e.code === "not-found")) throw e;
+        if (!(e instanceof EngineApiError && e.code === "not-found")) {
+          await log(deps, { ...entry, result: "failed", detail: e instanceof Error ? e.message : String(e) });
+          throw e;
+        }
       }
     }
     await deps.store.remove(record.id);
+    await log(deps, { ...entry, result: "ok", detail: null });
+  }
+  async function reconcile(deps) {
+    const records = await deps.store.load();
+    if (records.length === 0) return [];
+    const list = await deps.client.list();
+    const byId = new Map(list.map((x) => [x.id, x]));
+    const now = nowOf(deps).toISOString();
+    const changed = [];
+    const next = records.map((record) => {
+      const engine = byId.get(record.extensionId);
+      if (!engine) {
+        if (record.lastError?.startsWith("missing:")) return record;
+        const marked = { ...record, lastError: `missing: Marinara no longer has extension ${record.extensionId}` };
+        changed.push(marked);
+        return marked;
+      }
+      if (engine.contentHash !== record.installedHash && record.latest && record.latest.hash === engine.contentHash) {
+        const completed = { ...record, installedVersion: engine.version, installedHash: engine.contentHash, installedAt: engine.updatedAt || now, latest: { ...record.latest, state: "up-to-date" }, lastError: null };
+        changed.push(completed);
+        void log(deps, { action: "update", result: "ok", extensionId: engine.id, name: engine.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(engine), detail: "completed after an interrupted update (reconciled on open)" });
+        return completed;
+      }
+      return record;
+    });
+    if (changed.length) await deps.store.save(next);
+    return changed;
   }
   async function untrackedExtensions(deps) {
     const [list, records] = await Promise.all([deps.client.list(), deps.store.load()]);
@@ -1462,7 +1673,22 @@
     "error.install.runtime-changed": "The package changes the runtime ({message}). An extension is never switched between browser and server; install it as a new extension instead.",
     "error.install.unexpected-result": "Marinara's answer does not match what was sent ({message}). Check the extension in Settings → Addons → External Extensions before approving anything.",
     "error.install.not-linkable": "Linking needs Marinara's extension list, which could not be read.",
-    "error.import.invalid": "That is not an exported source list."
+    "error.import.invalid": "That is not an exported source list.",
+    "anchor.button": "Install from GitHub (Fetchy)",
+    "anchor.hint": "Fetchy adds a button under Settings → Addons → External Extensions. Shortcut: Alt+Shift+F.",
+    "option.floating": "Floating button",
+    "warn.capabilitiesAdded": "MORE AUTHORITY REQUESTED: this version asks for {values}, which the installed extension does not have. Marinara will require a fresh approval of the new hash; read the code before you approve.",
+    "warn.capabilitiesRemoved": "This version drops the capabilities {values}.",
+    "warn.sameVersionChanged": "The source changed its code without changing the version ({version}). Treat it like a new release: review the changes before updating.",
+    "log.heading": "Change log",
+    "log.empty": "Nothing recorded yet.",
+    "log.show": "Change log",
+    "log.hide": "Hide log",
+    "log.export": "Copy as text",
+    "log.clear": "Clear log",
+    "log.entry": "{at} · {action} · {result} · {name}",
+    "log.reconciled": "Completed {count} update(s) that finished in Marinara while the panel was closed.",
+    "log.missing": "Marinara no longer has this extension."
   };
   var ko = {
     "title": "Fetchy",
@@ -1619,7 +1845,22 @@
     "error.install.runtime-changed": "패키지가 런타임을 바꿉니다 ({message}). 확장을 브라우저↔서버로 전환하지 않습니다. 새 확장으로 설치하세요.",
     "error.install.unexpected-result": "Marinara의 응답이 보낸 내용과 다릅니다 ({message}). 승인 전에 설정 → 애드온 → 외부 확장에서 확장을 확인하세요.",
     "error.install.not-linkable": "연결에는 Marinara의 확장 목록이 필요한데 읽을 수 없습니다.",
-    "error.import.invalid": "내보낸 소스 목록이 아닙니다."
+    "error.import.invalid": "내보낸 소스 목록이 아닙니다.",
+    "anchor.button": "GitHub에서 설치 (Fetchy)",
+    "anchor.hint": "Fetchy 버튼은 설정 → 애드온 → 외부 확장 아래에 있습니다. 단축키: Alt+Shift+F.",
+    "option.floating": "플로팅 버튼",
+    "warn.capabilitiesAdded": "권한 추가 요청: 이 버전은 설치된 확장에 없는 {values} 권한을 요구합니다. Marinara가 새 해시의 승인을 다시 요구하며, 승인 전에 코드를 읽어 보세요.",
+    "warn.capabilitiesRemoved": "이 버전은 {values} 권한을 더 쓰지 않습니다.",
+    "warn.sameVersionChanged": "소스가 버전({version})은 그대로 둔 채 코드만 바꿨습니다. 새 릴리스처럼 다루고, 업데이트 전에 변경 사항을 확인하세요.",
+    "log.heading": "변경 기록",
+    "log.empty": "아직 기록이 없습니다.",
+    "log.show": "변경 기록",
+    "log.hide": "기록 닫기",
+    "log.export": "텍스트로 복사",
+    "log.clear": "기록 지우기",
+    "log.entry": "{at} · {action} · {result} · {name}",
+    "log.reconciled": "패널이 닫힌 사이 Marinara에서 끝난 업데이트 {count}건을 기록에 반영했습니다.",
+    "log.missing": "Marinara에 이 확장이 더 이상 없습니다."
   };
   function detectLang(language) {
     return language?.toLowerCase().startsWith("ko") ? "ko" : "en";
@@ -1666,14 +1907,17 @@
   box-shadow: 0 4px 14px rgba(0,0,0,.3); cursor: pointer;
 }
 .launcher:hover, .launcher:focus-visible { background: var(--accent2); outline: 2px solid #fff6; }
+.backdrop { position: fixed; inset: 0; z-index: 2147483001; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.backdrop[hidden] { display: none; }
 .panel {
-  position: fixed; right: 16px; bottom: 60px; z-index: 2147483001;
-  width: min(600px, calc(100vw - 32px)); max-height: min(82vh, 820px); overflow: auto;
+  width: min(640px, 100%); max-height: min(88vh, 860px); overflow: auto;
   background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 12px 40px rgba(0,0,0,.45); padding: 14px 16px 16px;
 }
-@media (max-width: 600px) { .panel { right: 0; left: 0; bottom: 0; width: 100vw; max-height: 92vh; border-radius: 12px 12px 0 0; } .launcher { bottom: 12px; right: 12px; } }
-.panel[hidden] { display: none; }
+@media (max-width: 600px) { .backdrop { align-items: flex-end; padding: 0; } .panel { max-height: 94vh; border-radius: 12px 12px 0 0; } .launcher { bottom: 12px; right: 12px; } }
+.launcher[hidden] { display: none; }
+ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; }
+ul.log .refused, ul.log .failed { color: var(--err-fg); }
 h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 h2 .ver { font-weight: 400; color: var(--muted); font-size: 12px; }
 h3 { margin: 16px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
@@ -1763,22 +2007,39 @@ footer { margin-top: 16px; }
     let urlInput = "";
     let transfer = null;
     let autoCheck = false;
+    let floating = false;
+    let showLog = false;
+    let logEntries = [];
+    let reconcileMessage = null;
     const jsDigest = digestBackend() === "javascript";
+    const audit = new AuditLog(host.storage);
+    deps.audit = audit;
     const hostElement = el("div", { id: HOST_ELEMENT_ID });
     const root = hostElement.attachShadow({ mode: "open" });
     const wrapper = el("div", { class: "root" });
     wrapper.append(el("style", {}, STYLE));
-    const launcher = el("button", { class: "launcher", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", title: t("launcher.title"), onClick: () => toggle() }, t("launcher"));
-    const panel = el("div", { class: "panel", role: "dialog", "aria-label": t("title"), hidden: true, tabindex: "-1" });
+    const launcher = el("button", { class: "launcher", type: "button", hidden: true, "aria-haspopup": "dialog", "aria-expanded": "false", title: t("launcher.title"), onClick: () => toggle() }, t("launcher"));
+    const panel = el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": t("title"), tabindex: "-1" });
+    const backdrop = el("div", { class: "backdrop", hidden: true, onClick: (e) => {
+      if (e.target === backdrop) close();
+    } }, panel);
     panel.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
         close();
       }
     });
-    wrapper.append(launcher, panel);
+    wrapper.append(launcher, backdrop);
     root.append(wrapper);
     doc.body.append(hostElement);
+    const anchor = mountAnchor(doc, t("anchor.button"), () => open());
+    const onShortcut = (e) => {
+      if (e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) {
+        e.preventDefault();
+        toggle();
+      }
+    };
+    doc.addEventListener("keydown", onShortcut);
     const guard = async (fn) => {
       if (busy) return;
       busy = true;
@@ -1807,6 +2068,21 @@ footer { margin-top: 16px; }
         sourcesMessage = { kind: "err", text: describeError(e, t) };
       }
     }
+    async function reconcileRecords() {
+      try {
+        const changed = await reconcile(deps);
+        if (changed.some((r) => !r.lastError)) reconcileMessage = { kind: "ok", text: t("log.reconciled", { count: changed.filter((r) => !r.lastError).length }) };
+        if (changed.length) records = await store.load();
+      } catch {
+      }
+    }
+    async function loadLog() {
+      try {
+        logEntries = await audit.list();
+      } catch {
+        logEntries = [];
+      }
+    }
     async function loadUntracked() {
       try {
         untracked = await untrackedExtensions(deps);
@@ -1827,7 +2103,7 @@ footer { margin-top: 16px; }
       }
     });
     const afterChange = async () => {
-      await Promise.all([loadRecords(), loadUntracked()]);
+      await Promise.all([loadRecords(), loadUntracked(), loadLog()]);
     };
     const onInstall = (mode) => guard(async () => {
       if (!prepared) return;
@@ -1948,6 +2224,13 @@ footer { margin-top: 16px; }
       });
       render();
     };
+    const setFloating = (value) => {
+      floating = value;
+      launcher.hidden = !floating;
+      void host.storage.patch({ floating }).catch(() => {
+      });
+      render();
+    };
     const message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
     function gateLine() {
       if (policyError) return el("p", { class: "gate bad" }, t("gate.unknown", { error: policyError }));
@@ -1986,6 +2269,9 @@ footer { margin-top: 16px; }
         if (w.code === "unknown-capabilities") warnings.push(el("div", { class: "msg warn" }, t("warn.unknownCaps", { values: w.values.join(", ") })));
         if (w.code === "unknown-kind") warnings.push(el("div", { class: "msg warn" }, t("warn.unknownKind", { kind: w.kind })));
       }
+      if (view?.capabilitiesAdded.length) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.capabilitiesAdded", { values: view.capabilitiesAdded.join(", ") })));
+      if (view?.capabilitiesRemoved.length) warnings.push(el("div", { class: "msg warn" }, t("warn.capabilitiesRemoved", { values: view.capabilitiesRemoved.join(", ") })));
+      if (view && !view.sameCode && view.record.version !== null && view.record.version === d.version) warnings.push(el("div", { class: "msg warn" }, t("warn.sameVersionChanged", { version: d.version ?? "" })));
       if (view?.editedInMarinara && !view.sameCode) warnings.push(el("div", { class: "msg warn" }, t("warn.editedInMarinara")));
       if (view?.runtimeDiffers) warnings.push(el("div", { class: "msg err", role: "alert" }, t("warn.runtimeDiffers", { before: view.record.runtime, after: d.runtime })));
       if (view?.nameDiffers && !view.sameCode) warnings.push(el("div", { class: "msg warn" }, t("warn.nameDiffers", { before: view.record.name, after: d.name })));
@@ -2181,8 +2467,41 @@ footer { margin-top: 16px; }
         )
       );
     }
+    function logBlock() {
+      if (!showLog) return null;
+      const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
+      return el(
+        "section",
+        { class: "log" },
+        el(
+          "div",
+          { class: "row between" },
+          el("h3", {}, t("log.heading")),
+          el(
+            "div",
+            { class: "row" },
+            el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => {
+              void navigator.clipboard?.writeText(AuditLog.format(logEntries)).then(() => {
+                sourcesMessage = { kind: "ok", text: t("result.copied") };
+                render();
+              }).catch(() => {
+              });
+            } }, t("log.export")),
+            el("button", { class: "small danger", type: "button", disabled: logEntries.length === 0, onClick: () => guard(async () => {
+              await audit.clear();
+              await loadLog();
+            }) }, t("log.clear")),
+            el("button", { class: "small", type: "button", onClick: () => {
+              showLog = false;
+              render();
+            } }, t("log.hide"))
+          )
+        ),
+        logEntries.length === 0 ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
+      );
+    }
     function render() {
-      panel.hidden = !isOpen;
+      backdrop.hidden = !isOpen;
       launcher.setAttribute("aria-expanded", String(isOpen));
       panel.replaceChildren(fragment(
         el(
@@ -2254,6 +2573,11 @@ footer { margin-top: 16px; }
               "div",
               { class: "row" },
               el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck")),
+              el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating")),
+              el("button", { class: "small", type: "button", onClick: () => {
+                showLog = !showLog;
+                render();
+              } }, t(showLog ? "log.hide" : "log.show")),
               el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
               el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
                 transfer = { kind: "export", text: exportSources(records) };
@@ -2268,9 +2592,12 @@ footer { margin-top: 16px; }
           transferBlock(),
           records.length === 0 ? el("p", { class: "muted" }, t("sources.empty")) : el("ul", { class: "sources" }, ...records.map(sourceItem)),
           records.length ? el("p", { class: "note" }, t("sources.updateNote")) : null,
+          message(reconcileMessage),
           message(sourcesMessage)
         ),
+        logBlock(),
         untrackedSection(),
+        el("p", { class: "note" }, t("anchor.hint")),
         el("footer", {}, el("p", { class: "muted" }, t("security.note")))
       ));
     }
@@ -2278,15 +2605,16 @@ footer { margin-top: 16px; }
       isOpen = true;
       render();
       panel.focus();
-      void Promise.all([loadPolicy(), loadUntracked()]).then(() => {
+      void Promise.all([loadPolicy(), loadUntracked(), loadLog(), reconcileRecords()]).then(() => {
         render();
         if (autoCheck && records.length && !busy) void onCheckAll();
       });
     }
     function close() {
       isOpen = false;
+      reconcileMessage = null;
       render();
-      launcher.focus();
+      if (floating) launcher.focus();
     }
     function toggle() {
       if (isOpen) close();
@@ -2297,6 +2625,8 @@ footer { margin-top: 16px; }
         const data = await host.storage.get();
         if (data.lang === "ko" || data.lang === "en") i18n.lang = data.lang;
         autoCheck = data.autoCheck === true;
+        floating = data.floating === true;
+        launcher.hidden = !floating;
       } catch {
       }
       launcher.textContent = t("launcher");
@@ -2312,14 +2642,19 @@ footer { margin-top: 16px; }
       close,
       toggle,
       ready,
+      get anchored() {
+        return anchor.attached;
+      },
       destroy() {
+        anchor.destroy();
+        doc.removeEventListener("keydown", onShortcut);
         hostElement.remove();
       }
     };
   }
 
   // src/index.ts
-  var VERSION = true ? "0.2.0" : "0.0.0";
+  var VERSION = true ? "0.3.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
