@@ -12,6 +12,8 @@
 * **리비전** — Marinara가 보관한 이전 리비전으로 되돌리기. 되돌린 코드도 다시 승인 필요
 * **내보내기 / 가져오기** — 소스 목록을 JSON으로. 다른 브라우저나 다른 Marinara로 옮길 때. 코드와 비밀값은 없음
 * **할 일을 알려 주는 오류** — 외부 확장 게이트 두 개, Admin Access, 허용되지 않은 호스트, CSRF, CORS, GitHub API 한도, 다운로드 중 바뀐 소스
+* **변경 기록** — 설치·업데이트·연결·되돌리기·제거를 버전·해시·권한과 함께 기록 (최근 200건, 비밀값은 절대 기록하지 않음). 패널이 닫힌 사이 끝난 업데이트는 다음에 열 때 기록에 반영
+* **권한 경고** — 업데이트가 새 권한을 요구하거나, 버전은 그대로인데 코드만 바뀌었으면 크게 알림
 * **한국어·영어 UI**, 라이트·다크 테마, 좁은 화면에서는 바텀 시트
 
 ## 설치
@@ -19,7 +21,7 @@
 1. 서버 `.env`에 `ENABLE_EXTERNAL_EXTENSIONS=true` 를 넣고 Marinara 재시작
 2. 설정 → 애드온(Addons) → 외부 확장(External Extensions): **Allow third-party extension imports** 를 켜고 `ME-Fetchy-<버전>.zip` 가져오기
 3. 목록의 **Fetchy** → **Review and Run**: 코드를 읽고 해시 승인 (`SHA256SUMS.txt`의 값과 같아야 함)
-4. 페이지 오른쪽 아래에 **확장 설치** 버튼이 나타남
+4. 같은 화면(설정 → 애드온 → 외부 확장)의 가져오기 버튼 옆에 **GitHub에서 설치 (Fetchy)** 버튼이 나타남. 단축키 Alt+Shift+F, 원하면 패널에서 플로팅 버튼을 켤 수 있음
 
 원격(localhost가 아닌) Marinara는 서버 `.env`의 `ADMIN_SECRET`을 설정 → Admin Access에 입력해야 합니다. Fetchy 자신을 업데이트하려면 소스에 `FigCake/ME.Fetchy`를 추가하세요.
 
