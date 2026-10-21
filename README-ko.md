@@ -22,7 +22,7 @@
 1. 서버 `.env`에 `ENABLE_EXTERNAL_EXTENSIONS=true` 를 넣고 Marinara 재시작
 2. 설정 → 애드온(Addons) → 외부 확장(External Extensions): **Allow third-party extension imports** 를 켜고 `ME-Fetchy-<버전>.zip` 가져오기
 3. 목록의 **Fetchy** → **Review and Run**: 코드를 읽고 해시 승인 (`SHA256SUMS.txt`의 값과 같아야 함)
-4. 같은 화면(설정 → 애드온 → 외부 확장)의 가져오기 버튼 옆에 **GitHub에서 설치 (Fetchy)** 버튼이 나타남. 단축키 Alt+Shift+F, 원하면 패널에서 플로팅 버튼을 켤 수 있음
+4. 같은 화면(설정 → 애드온 → 외부 확장)의 가져오기 버튼 옆에 **GitHub에서 설치 (Fetchy)** 버튼이 나타남. 단축키 Alt+Shift+F, 플로팅 버튼은 옵션에서 켤 수 있음. 설명은 작은 (?) 표시에 마우스를 올리면 나옴
 
 원격(localhost가 아닌) Marinara는 서버 `.env`의 `ADMIN_SECRET`을 설정 → Admin Access에 입력해야 합니다. Fetchy 자신을 업데이트하려면 소스에 `FigCake/ME.Fetchy`를 추가하세요.
 

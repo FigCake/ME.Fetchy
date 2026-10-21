@@ -1,4 +1,4 @@
-/*! Fetchy 0.5.2 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.6.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -1646,12 +1646,12 @@
     "action.forget.listOnly": "Remove from this list only",
     "action.forget.engine": "Also delete from Marinara",
     "action.confirmForget": 'Remove "{name}"?',
-    "result.created": "Installed “{name}” (switched off). Approve it in Settings → Addons → External Extensions with Review and Run. Hash: {hash}",
-    "result.updated": "Updated “{name}”. It is switched off again: approve it in Settings → Addons → External Extensions with Review and Run. New hash: {hash}",
+    "result.created": "Installed “{name}”. It is off until you approve it: Settings → Addons → External Extensions → Review and Run.",
+    "result.updated": "Updated “{name}”. It is off until you approve it again: Settings → Addons → External Extensions → Review and Run.",
     "result.forgotten": 'Removed "{name}" from the list.',
     "result.deleted": 'Deleted "{name}" from Marinara and removed it from the list.',
     "result.nameExists": "Marinara already has “{name}”. Update that extension with this code? It will need approval again.",
-    "result.checked": "Checked {count} source(s).",
+    "result.checked": "Checked.",
     "sources.heading": "Installed",
     "sources.empty": "Nothing yet.",
     "sources.installed": "installed",
@@ -1727,7 +1727,7 @@
     "action.apply": "Apply",
     "action.autoCheck": "Check for updates on open",
     "action.refresh": "Refresh",
-    "result.linked": 'Linked "{name}" to its source. No code was changed.',
+    "result.linked": "Linked “{name}”.",
     "result.rolledBack": 'Restored "{name}" to {hash}. Marinara keeps it disabled until you approve that hash again in Settings → Addons → External Extensions.',
     "result.checking": "Checking {done}/{total}…",
     "result.exported": 'Copy the text below and keep it; "Import list" restores it (no code, no secrets).',
@@ -1765,11 +1765,11 @@
     "log.entry": "{at} · {action} · {result} · {name}",
     "log.reconciled": "Completed {count} update(s) that finished in Marinara while the panel was closed.",
     "log.missing": "Marinara no longer has this extension.",
-    "items.heading": "Extensions in Marinara",
+    "items.heading": "Extensions",
     "items.empty": "No external extensions.",
     "items.unavailable": "Marinara's extension list could not be read ({error}). Only Fetchy's own records are shown.",
     "item.notFromFetchy": "Not installed through Fetchy",
-    "item.approveHint": "Switched off until you approve it: Settings → Addons → External Extensions → Review and Run.",
+    "item.approveHint": "Off until approved: Settings → Addons → External Extensions → Review and Run.",
     "badge.enabled": "on",
     "badge.disabled": "off",
     "badge.needsApproval": "needs approval",
@@ -1779,7 +1779,17 @@
     "action.confirmDelete": "Delete “{name}” from Marinara?",
     "action.reinstall": "Install again",
     "result.disabled": "Switched “{name}” off.",
-    "result.updatedAndOn": "Updated “{name}” and switched it back on (auto re-approval). New hash: {hash}",
+    "action.more": "More",
+    "action.less": "Less",
+    "prefs.heading": "Options",
+    "help.install": "A GitHub repository (FigCake/ME.Fetchy, or a /tree/branch/folder link), a manifest.json address, or a zip address. Fetchy downloads the files, shows what they are, and stores them in Marinara switched off. You switch them on under Settings → Addons → External Extensions (Review and Run).",
+    "help.items": "Every External Extension in Marinara. Ones installed through Fetchy can be checked for updates; others can be linked to the GitHub address they came from. An update always switches the extension off until you approve the new code.",
+    "help.autoCheck": "Only checks for updates when this panel opens. Never installs anything by itself.",
+    "help.floating": "Also shows a Fetchy button at the bottom right of every page.",
+    "help.autoApprove": "After an update, approve the new code and switch the extension back on without reading it. Not applied when the new version asks for new capabilities, or if the extension was off.",
+    "help.log": "What Fetchy did, with versions and hashes before and after. Never contains secrets.",
+    "help.transfer": "The list of sources as text, to move to another browser or Marinara. No code, no secrets.",
+    "result.updatedAndOn": "Updated “{name}” and switched it back on.",
     "result.notApproved.capabilities-grew": "Updated “{name}”, but it stays off: this version asks for new capabilities, so auto re-approval did not apply. Review it in Settings → Addons → External Extensions → Review and Run. New hash: {hash}",
     "result.notApproved.failed": "Updated “{name}”, but re-approval failed ({error}). It stays off until you approve it in Settings → Addons → External Extensions. New hash: {hash}",
     "auto.label": "Auto re-approve after updates",
@@ -1845,12 +1855,12 @@
     "action.forget.listOnly": "목록에서만 제거",
     "action.forget.engine": "Marinara에서도 삭제",
     "action.confirmForget": '"{name}"을(를) 제거할까요?',
-    "result.created": "“{name}” 설치했습니다 (꺼진 상태). 설정 → 애드온 → 외부 확장에서 Review and Run을 눌러 승인하세요. 해시: {hash}",
-    "result.updated": "“{name}” 업데이트됨. 다시 꺼졌으니 설정 → 애드온 → 외부 확장에서 Review and Run으로 다시 승인하세요. 새 해시: {hash}",
+    "result.created": "“{name}” 설치했습니다. 승인하면 켜집니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
+    "result.updated": "“{name}” 업데이트했습니다. 다시 승인하면 켜집니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
     "result.forgotten": '"{name}"을(를) 목록에서 제거했습니다.',
     "result.deleted": '"{name}"을(를) Marinara에서 삭제하고 목록에서 제거했습니다.',
     "result.nameExists": "Marinara에 “{name}”이 이미 있습니다. 그 확장을 이 코드로 업데이트할까요? 다시 승인해야 합니다.",
-    "result.checked": "{count}개 소스를 확인했습니다.",
+    "result.checked": "확인했습니다.",
     "sources.heading": "설치한 확장",
     "sources.empty": "아직 없습니다.",
     "sources.installed": "설치 버전",
@@ -1926,7 +1936,7 @@
     "action.apply": "적용",
     "action.autoCheck": "열 때 업데이트 확인",
     "action.refresh": "새로고침",
-    "result.linked": '"{name}"을(를) 소스에 연결했습니다. 코드는 바꾸지 않았습니다.',
+    "result.linked": "“{name}” 연결했습니다.",
     "result.rolledBack": '"{name}"을(를) {hash} 로 되돌렸습니다. 설정 → 애드온 → 외부 확장에서 그 해시를 다시 승인할 때까지 Marinara는 비활성 상태로 둡니다.',
     "result.checking": "확인 중 {done}/{total}…",
     "result.exported": "아래 텍스트를 복사해 보관하세요. “목록 가져오기”로 복원할 수 있습니다 (코드·비밀값 없음).",
@@ -1964,11 +1974,11 @@
     "log.entry": "{at} · {action} · {result} · {name}",
     "log.reconciled": "패널이 닫힌 사이 Marinara에서 끝난 업데이트 {count}건을 기록에 반영했습니다.",
     "log.missing": "Marinara에 이 확장이 더 이상 없습니다.",
-    "items.heading": "Marinara의 확장",
+    "items.heading": "확장",
     "items.empty": "외부 확장이 없습니다.",
     "items.unavailable": "Marinara의 확장 목록을 읽을 수 없습니다 ({error}). Fetchy 기록만 보입니다.",
     "item.notFromFetchy": "Fetchy로 설치하지 않음",
-    "item.approveHint": "승인 전까지 꺼져 있습니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
+    "item.approveHint": "승인하면 켜집니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
     "badge.enabled": "켜짐",
     "badge.disabled": "꺼짐",
     "badge.needsApproval": "승인 필요",
@@ -1978,7 +1988,17 @@
     "action.confirmDelete": "“{name}”을(를) Marinara에서 삭제할까요?",
     "action.reinstall": "다시 설치",
     "result.disabled": "“{name}”을(를) 껐습니다.",
-    "result.updatedAndOn": "“{name}” 업데이트하고 다시 켰습니다 (자동 승인). 새 해시: {hash}",
+    "action.more": "더보기",
+    "action.less": "접기",
+    "prefs.heading": "옵션",
+    "help.install": "GitHub 저장소(FigCake/ME.Fetchy 처럼, 또는 /tree/브랜치/폴더 링크), manifest.json 주소, zip 주소. Fetchy가 파일을 받아 내용을 보여 주고 Marinara에 꺼진 상태로 넣습니다. 켜는 것은 설정 → 애드온 → 외부 확장(Review and Run)에서 합니다.",
+    "help.items": "Marinara의 외부 확장 전부입니다. Fetchy로 설치한 것은 업데이트를 확인할 수 있고, 아닌 것은 받아온 GitHub 주소를 연결하면 됩니다. 업데이트하면 새 코드를 승인할 때까지 확장이 꺼집니다.",
+    "help.autoCheck": "이 패널을 열 때 업데이트가 있는지만 봅니다. 혼자 설치하지는 않습니다.",
+    "help.floating": "모든 페이지 오른쪽 아래에도 Fetchy 버튼을 둡니다.",
+    "help.autoApprove": "업데이트 뒤 새 코드를 읽지 않고 승인해 다시 켭니다. 새 권한을 요구하는 버전이나 꺼져 있던 확장에는 적용하지 않습니다.",
+    "help.log": "Fetchy가 한 일을 버전·해시 전후와 함께 기록합니다. 비밀값은 들어가지 않습니다.",
+    "help.transfer": "소스 목록을 글로 뽑아 다른 브라우저나 Marinara로 옮깁니다. 코드와 비밀값은 없습니다.",
+    "result.updatedAndOn": "“{name}” 업데이트하고 다시 켰습니다.",
     "result.notApproved.capabilities-grew": "“{name}” 업데이트했지만 꺼진 채로 둡니다. 이 버전은 새 권한을 요구해서 자동 승인을 적용하지 않았습니다. 설정 → 애드온 → 외부 확장 → Review and Run에서 직접 확인하세요. 새 해시: {hash}",
     "result.notApproved.failed": "“{name}” 업데이트했지만 다시 승인하지 못했습니다 ({error}). 설정 → 애드온 → 외부 확장에서 승인할 때까지 꺼져 있습니다. 새 해시: {hash}",
     "auto.label": "업데이트 후 자동 승인",
@@ -2096,6 +2116,9 @@ ul.items > li:first-child { border-top: 0; }
 a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
 label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 label.toggle input { accent-color: var(--accent); }
+.help { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 700; line-height: 1; margin-left: 5px; cursor: help; vertical-align: middle; user-select: none; }
+.help:hover, .help:focus { color: var(--fg); outline: none; }
+summary.row { list-style: none; } summary.row::-webkit-details-marker { display: none; }
 ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; color: var(--muted); }
 ul.log .refused, ul.log .failed { color: var(--fg); }
 .preview, .items, .install { margin-top: 4px; }
@@ -2127,6 +2150,9 @@ footer { margin-top: 20px; }
     if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
     return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
   }
+  function help(text) {
+    return el("span", { class: "help", tabindex: "0", role: "img", "aria-label": text, title: text }, "?");
+  }
   var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
   var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
   var shortHash = (hash) => `${hash.slice(0, 23)}…`;
@@ -2150,6 +2176,7 @@ footer { margin-top: 20px; }
     let codeFor = null;
     let deleting = null;
     let autoFor = null;
+    const expanded = /* @__PURE__ */ new Set();
     let installMessage = null;
     let sourcesMessage = null;
     let urlInput = "";
@@ -2456,10 +2483,9 @@ footer { margin-top: 20px; }
     };
     const message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
     function gateLine() {
-      if (policyError) return el("p", { class: "gate bad" }, t("gate.unknown", { error: policyError }));
-      if (!policy) return el("p", { class: "muted" }, t("gate.loading"));
-      if (policy.externalExtensionsEnabled) return el("p", { class: "gate ok" }, t("gate.open"));
-      return el("p", { class: "gate bad" }, policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
+      if (policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: policyError }));
+      if (!policy || policy.externalExtensionsEnabled) return null;
+      return el("p", { class: "msg warn" }, policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
     }
     function changesBlock(p) {
       const view = p.engine;
@@ -2555,11 +2581,6 @@ footer { margin-top: 20px; }
         el("div", { class: "row", style: "margin-top:10px" }, ...buttons)
       );
     }
-    function stateLine(r) {
-      if (r.lastError) return el("div", { class: "state error muted line" }, t("sources.error", { error: r.lastError }));
-      if (!r.latest) return el("div", { class: "state unknown muted line" }, t("sources.state.unknown"));
-      return el("div", { class: `state ${r.latest.state} line` }, t(`sources.state.${r.latest.state}`, { version: r.latest.version ?? "?" }));
-    }
     function revisionsBlock(extension, record) {
       if (!revisionsFor || revisionsFor.id !== extension.id) return null;
       const list = revisionsFor.list;
@@ -2633,74 +2654,107 @@ footer { margin-top: 20px; }
       );
     }
     function itemRow(extension, record) {
+      const key = extension?.id ?? `record:${record?.id ?? ""}`;
+      const open2 = expanded.has(key);
       const name = extension?.name ?? record?.name ?? "?";
       const version = extension?.version ?? record?.installedVersion ?? null;
       const needsUpdate = !!record?.latest && (record.latest.state === "update" || record.latest.state === "changed" || record.latest.state === "older");
-      const actions = [];
+      const toggleMore = () => {
+        if (open2) expanded.delete(key);
+        else expanded.add(key);
+        render();
+      };
+      const primary = [];
       if (record && extension) {
-        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
-        actions.push(el("button", { class: `small${needsUpdate ? " primary" : ""}`, type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
-        actions.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, t("action.open")));
+        primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
+        if (needsUpdate) primary.push(el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
       }
-      if (extension && !record) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(extension) }, t("untracked.link")));
-      if (extension) {
-        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
-          codeFor = codeFor === extension.id ? null : extension.id;
-          render();
-        } }, t("action.code")));
-        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRevisions(extension) }, t("action.revisions")));
-        if (extension.enabled && extension.id !== host.extensionId) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onDisable(extension) }, t("action.disable")));
-        if (extension.id !== host.extensionId) actions.push(el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => {
-          deleting = extension.id;
-          render();
-        } }, t("action.delete")));
-      }
-      if (record && !extension) {
-        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
-          urlInput = record.input;
-          prepared = null;
-          render();
-          void onFetch();
-        } }, t("action.reinstall")));
-        actions.push(el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
-      }
-      if (record && extension) {
-        actions.push(el("label", { class: "toggle" }, el("input", {
-          type: "checkbox",
-          class: "auto-approve",
-          checked: record.autoApprove === true,
-          disabled: busy,
-          onChange: (e) => {
-            const on = e.target.checked;
-            if (!on) {
-              void onAutoApprove(record, false);
-              return;
-            }
-            autoFor = { id: record.id, code: false, fullPage: false };
+      if (extension && !record) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(extension) }, t("untracked.link")));
+      if (record && !extension) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
+        urlInput = record.input;
+        prepared = null;
+        render();
+        void onFetch();
+      } }, t("action.reinstall")));
+      primary.push(el("button", { class: "small", type: "button", onClick: toggleMore }, open2 ? t("action.less") : t("action.more")));
+      const more = [];
+      if (open2) {
+        if (record && extension) {
+          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
+          more.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, el("button", { class: "small", type: "button" }, t("action.open"))));
+        }
+        if (extension) {
+          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
+            codeFor = codeFor === extension.id ? null : extension.id;
             render();
-          }
-        }), t("auto.label")));
-        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+          } }, t("action.code")));
+          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRevisions(extension) }, t("action.revisions")));
+          if (extension.enabled && extension.id !== host.extensionId) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onDisable(extension) }, t("action.disable")));
+          if (extension.id !== host.extensionId) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
+            deleting = extension.id;
+            render();
+          } }, t("action.delete")));
+        }
+        if (record) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+        if (record && extension) {
+          more.push(el("label", { class: "toggle" }, el("input", {
+            type: "checkbox",
+            class: "auto-approve",
+            checked: record.autoApprove === true,
+            disabled: busy,
+            onChange: (e) => {
+              const on = e.target.checked;
+              if (!on) {
+                void onAutoApprove(record, false);
+                return;
+              }
+              autoFor = { id: record.id, code: false, fullPage: false };
+              render();
+            }
+          }), t("auto.label"), help(t("help.autoApprove"))));
+        }
       }
       const confirm = extension && deleting === extension.id ? el(
         "div",
         { class: "actions" },
         el("span", {}, t("action.confirmDelete", { name })),
-        el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onDelete(extension) }, t("action.delete")),
+        el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onDelete(extension) }, t("action.delete")),
         el("button", { class: "small", type: "button", onClick: () => {
           deleting = null;
           render();
         } }, t("action.cancel"))
-      ) : el("div", { class: "actions" }, ...actions);
+      ) : null;
+      const sourceText = record ? describeSource(record.source) + (record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "") : null;
+      const stateText = record?.lastError ? t("sources.error", { error: record.lastError }) : record?.latest && record.latest.state !== "up-to-date" ? t(`sources.state.${record.latest.state}`, { version: record.latest.version ?? "?" }) : null;
       return el(
         "li",
         { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
-        el("div", { class: "name" }, name, " ", el("span", { class: "muted" }, `v${version ?? "?"}`)),
-        el("div", { class: "line" }, ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))], record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null),
+        el(
+          "div",
+          { class: "row between" },
+          el(
+            "div",
+            {},
+            el("span", { class: "name" }, name),
+            " ",
+            el("span", { class: "muted" }, `v${version ?? "?"}`),
+            " ",
+            ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))],
+            record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null
+          ),
+          el("div", { class: "row" }, ...primary)
+        ),
+        sourceText || stateText ? el("div", { class: "muted line" }, sourceText ?? "", sourceText && stateText ? " · " : "", stateText ? el("span", { class: `state ${record?.latest?.state ?? ""}` }, stateText) : null) : null,
         extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
-        record ? el("div", { class: "muted line" }, describeSource(record.source), record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "", ` · ${t("sources.lastCheck")}: ${formatDate(record.lastCheckedAt) ?? t("sources.never")}`) : el("div", { class: "muted line" }, t("item.notFromFetchy")),
-        el("div", { class: "muted line" }, el("code", {}, shortHash(extension?.contentHash ?? record?.installedHash ?? "")), extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : ""),
-        record && extension ? stateLine(record) : null,
+        open2 ? el(
+          "div",
+          { class: "muted line" },
+          el("code", {}, extension?.contentHash ?? record?.installedHash ?? ""),
+          extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : "",
+          record?.lastCheckedAt ? ` · ${t("sources.lastCheck")} ${formatDate(record.lastCheckedAt)}` : "",
+          record ? null : ` · ${t("item.notFromFetchy")}`
+        ) : null,
+        open2 && !confirm ? el("div", { class: "actions" }, ...more) : null,
         confirm,
         record && extension ? autoApproveConfirm(record, extension) : null,
         extension ? revisionsBlock(extension, record) : null,
@@ -2716,18 +2770,32 @@ footer { margin-top: 20px; }
         el(
           "div",
           { class: "row between" },
-          el("h3", {}, t("items.heading")),
+          el("h3", {}, t("items.heading"), help(t("help.items"))),
           el(
             "div",
             { class: "row" },
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck")),
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating")),
-            el("button", { class: "small", type: "button", disabled: busy, onClick: onRefresh }, t("action.refresh")),
             el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
+            el("button", { class: "small", type: "button", disabled: busy, onClick: onRefresh }, t("action.refresh"))
+          )
+        ),
+        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
+        sorted.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : el("ul", { class: "items" }, ...sorted.map((r) => itemRow(r.extension, r.record))),
+        message(reconcileMessage),
+        message(sourcesMessage),
+        el(
+          "details",
+          { class: "prefs" },
+          el("summary", {}, t("prefs.heading")),
+          el(
+            "div",
+            { class: "actions" },
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating"), help(t("help.floating"))),
             el("button", { class: "small", type: "button", onClick: () => {
               showLog = !showLog;
               render();
             } }, t(showLog ? "log.hide" : "log.show")),
+            help(t("help.log")),
             el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
               transfer = { kind: "export", text: exportSources(records) };
               render();
@@ -2735,15 +2803,13 @@ footer { margin-top: 20px; }
             el("button", { class: "small", type: "button", onClick: () => {
               transfer = { kind: "import", text: "" };
               render();
-            } }, t("action.import"))
-          )
-        ),
-        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
-        transferBlock(),
-        sorted.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : el("ul", { class: "items" }, ...sorted.map((r) => itemRow(r.extension, r.record))),
-        el("p", { class: "note" }, t("sources.updateNote")),
-        message(reconcileMessage),
-        message(sourcesMessage)
+            } }, t("action.import")),
+            help(t("help.transfer")),
+            el("span", { class: "muted" }, t("anchor.hint"))
+          ),
+          transferBlock(),
+          logBlock()
+        )
       );
     }
     function transferBlock() {
@@ -2836,7 +2902,7 @@ footer { margin-top: 20px; }
             "h2",
             {},
             t("title"),
-            el("span", { class: "ver" }, `v${options.version} · ${t("subtitle")}`),
+            el("span", { class: "ver" }, `v${options.version}`),
             jsDigest ? el("span", { class: "badge digest", title: t("badge.jsDigest.title") }, t("badge.jsDigest")) : null
           ),
           el(
@@ -2850,7 +2916,7 @@ footer { margin-top: 20px; }
         el(
           "section",
           { class: "install" },
-          el("h3", {}, t("install.heading")),
+          el("h3", {}, t("install.heading"), help(t("help.install"))),
           linking ? el(
             "div",
             { class: "msg warn" },
@@ -2883,14 +2949,10 @@ footer { margin-top: 20px; }
             }),
             el("button", { class: "primary", type: "submit", disabled: busy }, busy && !prepared ? t("install.fetching") : t("install.fetch"))
           ),
-          el("p", { class: "note" }, t("install.help")),
           message(installMessage)
         ),
         prepared ? previewSection(prepared) : null,
-        itemsSection(),
-        logBlock(),
-        el("p", { class: "note" }, t("anchor.hint")),
-        el("footer", {}, el("p", { class: "muted" }, t("security.note")))
+        itemsSection()
       ));
     }
     function open() {
@@ -2946,7 +3008,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.5.2" : "0.0.0";
+  var VERSION = true ? "0.6.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
