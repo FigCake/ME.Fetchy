@@ -9,10 +9,11 @@ An extension installer for [Marinara Engine](https://github.com/Pasta-Devs/Marin
 * **Changes** — When the extension already exists in Marinara: its current version and state, per-file size before → after, lines added and removed, and a warning when its code was edited in Marinara since the last install
 * **Install, update or link** — Creates the record through Marinara's own API, updates an existing one, or links an extension installed by hand without changing its code. Marinara keeps every install disabled until you approve its hash
 * **Manage extensions** — Every External Extension in Marinara in one list: on / off / needs approval, capability badges, view code, switch off, delete, roll back to a kept revision. Extensions installed through Fetchy get update checks (one or all) and updates; hand-installed ones can be linked to their GitHub address. Optional check on open; nothing is ever installed automatically
+* **Update all** — Applies every update the last check found. With “Keep updated extensions on” (one acknowledgement), extensions that were on are approved and switched back on at once; versions asking for new capabilities are left off
 * **Revisions** — Restore any revision Marinara keeps; the restored code needs approval again
-* **Export / Import** — The source list as JSON, to move between browsers or Marinara instances. No code, no secrets
+* **Export / Import** — The source list as JSON, to move between browsers or Marinara instances
 * **Errors that say what to do** — Both External Extension gates, Admin Access, untrusted host, CSRF, CORS, GitHub API rate limit, a source that changed during download
-* **Change log** — Installs, updates, links, rollbacks and removals with versions, hashes and capabilities (last 200; never a secret). Updates that finished while the panel was closed are completed on the next open
+* **Change log** — Installs, updates, links, rollbacks and removals with versions, hashes and capabilities. Updates that finished while the panel was closed are completed on the next open
 * **Auto re-approval after updates (per extension, off by default)** — When on, Fetchy approves the new code after an update and switches the extension back on. Turning it on requires the same two acknowledgements as Marinara's approval dialog; it applies only to an extension that was on before the update and only when the new version asks for no new capability. **With this on, code the repository owner publishes runs without your review.** Use it only for authors you trust
 * **Authority warnings** — A loud warning when an update asks for new capabilities, or changes code without changing its version
 * **Korean and English UI**, light and dark theme, a bottom sheet on narrow screens
