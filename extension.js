@@ -1,4 +1,4 @@
-/*! Fetchy 0.3.0 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.4.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -226,6 +226,9 @@
       },
       async update(id, draft) {
         return (await request("PATCH", idPath(id), apiPayload(draft))).json();
+      },
+      async disable(id) {
+        return (await request("PATCH", idPath(id), { enabled: false })).json();
       },
       async rollback(id, contentHash) {
         if (!/^sha256:[a-f0-9]{64}$/.test(contentHash)) throw new EngineApiError("validation", 400, `Not a content hash: ${contentHash}`);
@@ -1406,10 +1409,6 @@
     };
     return install(prepared, deps, { kind: "update", extensionId: record.extensionId });
   }
-  async function revisionsOf(record, deps) {
-    const extension = (await deps.client.list()).find((x) => x.id === record.extensionId);
-    return extension?.revisions ?? [];
-  }
   async function rollbackSource(record, contentHash, deps) {
     let extension;
     try {
@@ -1466,10 +1465,36 @@
     if (changed.length) await deps.store.save(next);
     return changed;
   }
-  async function untrackedExtensions(deps) {
+  async function disableExtension(extension, deps) {
+    try {
+      const result = await deps.client.disable(extension.id);
+      await log(deps, { action: "disable", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: sideOf(result), detail: null });
+      return result;
+    } catch (e) {
+      await log(deps, { action: "disable", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+  async function deleteExtension(extension, deps) {
+    const record = (await deps.store.load()).find((r) => r.extensionId === extension.id);
+    if (record) return forgetSource(record, deps, true);
+    try {
+      await deps.client.remove(extension.id);
+    } catch (e) {
+      if (!(e instanceof EngineApiError && e.code === "not-found")) {
+        await log(deps, { action: "delete", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
+        throw e;
+      }
+    }
+    await log(deps, { action: "delete", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: null });
+  }
+  async function overview(deps) {
     const [list, records] = await Promise.all([deps.client.list(), deps.store.load()]);
-    const tracked = new Set(records.map((r) => r.extensionId));
-    return list.filter((x) => x.source !== "professor_mari" && !tracked.has(x.id) && x.id !== deps.selfId);
+    const byExtension = new Map(records.map((r) => [r.extensionId, r]));
+    const rows = list.filter((x) => x.source !== "professor_mari").map((extension) => ({ extension, record: byExtension.get(extension.id) ?? null }));
+    const known = new Set(list.map((x) => x.id));
+    for (const record of records) if (!known.has(record.extensionId)) rows.push({ extension: null, record });
+    return rows;
   }
   function exportSources(records) {
     return JSON.stringify({ kind: "me-fetchy.sources", version: 1, exportedAt: (/* @__PURE__ */ new Date()).toISOString(), sources: records }, null, 2);
@@ -1688,7 +1713,21 @@
     "log.clear": "Clear log",
     "log.entry": "{at} · {action} · {result} · {name}",
     "log.reconciled": "Completed {count} update(s) that finished in Marinara while the panel was closed.",
-    "log.missing": "Marinara no longer has this extension."
+    "log.missing": "Marinara no longer has this extension.",
+    "items.heading": "Extensions in Marinara",
+    "items.empty": "No external extensions.",
+    "items.unavailable": "Marinara's extension list could not be read ({error}). Only Fetchy's own records are shown.",
+    "item.notFromFetchy": "Not installed through Fetchy",
+    "item.approveHint": "Switched off until you approve it: Settings → Addons → External Extensions → Review and Run.",
+    "badge.enabled": "on",
+    "badge.disabled": "off",
+    "badge.needsApproval": "needs approval",
+    "action.code": "Code",
+    "action.disable": "Switch off",
+    "action.delete": "Delete",
+    "action.confirmDelete": "Delete “{name}” from Marinara?",
+    "action.reinstall": "Install again",
+    "result.disabled": "Switched “{name}” off."
   };
   var ko = {
     "title": "Fetchy",
@@ -1860,7 +1899,21 @@
     "log.clear": "기록 지우기",
     "log.entry": "{at} · {action} · {result} · {name}",
     "log.reconciled": "패널이 닫힌 사이 Marinara에서 끝난 업데이트 {count}건을 기록에 반영했습니다.",
-    "log.missing": "Marinara에 이 확장이 더 이상 없습니다."
+    "log.missing": "Marinara에 이 확장이 더 이상 없습니다.",
+    "items.heading": "Marinara의 확장",
+    "items.empty": "외부 확장이 없습니다.",
+    "items.unavailable": "Marinara의 확장 목록을 읽을 수 없습니다 ({error}). Fetchy 기록만 보입니다.",
+    "item.notFromFetchy": "Fetchy로 설치하지 않음",
+    "item.approveHint": "승인 전까지 꺼져 있습니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
+    "badge.enabled": "켜짐",
+    "badge.disabled": "꺼짐",
+    "badge.needsApproval": "승인 필요",
+    "action.code": "코드",
+    "action.disable": "끄기",
+    "action.delete": "삭제",
+    "action.confirmDelete": "“{name}”을(를) Marinara에서 삭제할까요?",
+    "action.reinstall": "다시 설치",
+    "result.disabled": "“{name}”을(를) 껐습니다."
   };
   function detectLang(language) {
     return language?.toLowerCase().startsWith("ko") ? "ko" : "en";
@@ -1885,13 +1938,15 @@
   // src/ui.ts
   var HOST_ELEMENT_ID = "me-fetchy";
   var STYLE = `
-:host { all: initial; }
-* { box-sizing: border-box; }
+:host { all: initial; display: block; position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 2147483000; }
+*, *::before, *::after { box-sizing: border-box; }
 .root {
   --bg: #1e1e26; --bg2: #12121a; --bg3: #2d2d3a; --fg: #e8e8f0; --muted: #9a9ab0; --line: #3a3a48; --accent: #5b4bd6; --accent2: #4a3bc2;
   --ok-bg: #16321f; --ok-fg: #b8f0c6; --ok-line: #2d6a40; --err-bg: #3a1a1e; --err-fg: #ffc9ce; --err-line: #8a3a44;
   --warn-bg: #3a2f12; --warn-fg: #ffe2a0; --warn-line: #8a6c22; --loud-bg: #4a1414; --loud-fg: #ffd0d0; --loud-line: #e03030; --link: #9fb4ff;
-  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  font-size: 14px; line-height: 1.5; color: var(--fg);
+  word-break: keep-all; overflow-wrap: break-word; letter-spacing: normal; text-align: left; white-space: normal;
 }
 @media (prefers-color-scheme: light) {
   .root {
@@ -1902,62 +1957,69 @@
 }
 .launcher {
   position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
-  font: 600 13px/1 system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  font: 600 14px/1 system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   color: #fff; background: var(--accent); border: 0; border-radius: 999px; padding: 10px 14px;
-  box-shadow: 0 4px 14px rgba(0,0,0,.3); cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,.3); cursor: pointer; white-space: nowrap;
 }
-.launcher:hover, .launcher:focus-visible { background: var(--accent2); outline: 2px solid #fff6; }
-.backdrop { position: fixed; inset: 0; z-index: 2147483001; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.launcher:hover, .launcher:focus { background: var(--accent2); outline: none; }
+.launcher[hidden] { display: none; }
+.backdrop { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 2147483001; background: rgba(0,0,0,.5); overflow: auto; padding: 24px 12px; }
 .backdrop[hidden] { display: none; }
 .panel {
-  width: min(640px, 100%); max-height: min(88vh, 860px); overflow: auto;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0,0,0,.45); padding: 14px 16px 16px;
+  position: relative; margin: 0 auto; width: 100%; max-width: 720px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.45); padding: 16px 18px 18px;
 }
-@media (max-width: 600px) { .backdrop { align-items: flex-end; padding: 0; } .panel { max-height: 94vh; border-radius: 12px 12px 0 0; } .launcher { bottom: 12px; right: 12px; } }
-.launcher[hidden] { display: none; }
-ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; }
-ul.log .refused, ul.log .failed { color: var(--err-fg); }
-h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-h2 .ver { font-weight: 400; color: var(--muted); font-size: 12px; }
-h3 { margin: 16px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+@media (max-width: 640px) { .backdrop { padding: 0; } .panel { max-width: none; min-height: 100%; border-radius: 0; border-left: 0; border-right: 0; padding: 14px 14px 18px; } }
+h2 { margin: 0; font-size: 17px; font-weight: 700; line-height: 1.3; }
+h2 .ver { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
+h3 { margin: 18px 0 8px; font-size: 13px; font-weight: 700; color: var(--muted); }
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 header .tools { display: flex; gap: 6px; }
-button { font: inherit; color: var(--fg); background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
-button:hover:not(:disabled) { filter: brightness(1.1); }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { font: inherit; font-size: 13px; line-height: 1.3; color: var(--fg); background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { border-color: #c44; }
-button.small { padding: 3px 8px; font-size: 12px; }
-input[type=text], textarea { font: inherit; color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 100%; }
-textarea { min-height: 90px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+button.small { padding: 4px 8px; font-size: 12px; }
+input[type=text], textarea { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+input[type=text]:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.4; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.row input { flex: 1; min-width: 160px; }
+.row input { flex: 1 1 200px; min-width: 0; }
 .between { justify-content: space-between; }
 .muted { color: var(--muted); font-size: 12px; }
 .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
-.badge { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--warn-line); color: var(--warn-fg); background: var(--warn-bg); }
-.msg { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
+.badge { display: inline-block; font-size: 11px; line-height: 1.4; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--bg2); margin-right: 4px; white-space: nowrap; }
+.badge.on { color: var(--ok-fg); border-color: var(--ok-line); background: var(--ok-bg); }
+.badge.off { color: var(--muted); }
+.badge.approve { color: var(--warn-fg); border-color: var(--warn-line); background: var(--warn-bg); }
+.badge.loud { color: var(--loud-fg); border-color: var(--loud-line); background: var(--loud-bg); }
+.msg { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; }
 .msg.ok { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--ok-line); }
 .msg.err { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-line); }
 .msg.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-line); }
 .msg.loud { background: var(--loud-bg); color: var(--loud-fg); border: 2px solid var(--loud-line); font-weight: 600; }
 .gate.ok { color: var(--ok-fg); } .gate.bad { color: var(--err-fg); }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; }
-dt { color: var(--muted); } dd { margin: 0; word-break: break-word; min-width: 0; }
-code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--bg2); padding: 1px 4px; border-radius: 4px; word-break: break-all; }
+dl { display: block; margin: 8px 0; }
+dl > div { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+dt { flex: 0 0 110px; color: var(--muted); } dd { flex: 1 1 auto; margin: 0; min-width: 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--bg2); padding: 1px 4px; border-radius: 4px; word-break: break-all; }
 details { margin-top: 8px; } summary { cursor: pointer; }
-pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--bg2); padding: 10px; border-radius: 8px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 6px 0 0; }
+pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--bg2); padding: 10px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
 ul.files, ul.changes, ul.revisions { margin: 4px 0 0; padding-left: 18px; }
-ul.sources, ul.untracked { list-style: none; margin: 0; padding: 0; }
-ul.sources li, ul.untracked li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 8px; }
-.name { font-weight: 600; }
+ul.items { list-style: none; margin: 0; padding: 0; }
+ul.items > li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 8px; background: var(--bg2); }
+.name { font-weight: 700; font-size: 15px; }
+.line { margin-top: 3px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
 .state.update, .state.changed, .state.older { color: var(--warn-fg); } .state.up-to-date { color: var(--ok-fg); }
 a { color: var(--link); }
-label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; }
-footer { margin-top: 16px; }
+label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; }
+ul.log .refused, ul.log .failed { color: var(--err-fg); }
+footer { margin-top: 18px; }
 `;
   function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -1981,6 +2043,10 @@ footer { margin-top: 16px; }
     append(node, children);
     return node;
   }
+  function drow(term, ...detail) {
+    if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
+    return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
+  }
   var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
   var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
   var shortHash = (hash) => `${hash.slice(0, 23)}…`;
@@ -1997,11 +2063,12 @@ footer { margin-top: 16px; }
     let prepared = null;
     let pendingExistingId = null;
     let linking = null;
-    let forgetting = null;
     let revisionsFor = null;
     let records = [];
-    let untracked = null;
-    let untrackedError = null;
+    let rows = null;
+    let rowsError = null;
+    let codeFor = null;
+    let deleting = null;
     let installMessage = null;
     let sourcesMessage = null;
     let urlInput = "";
@@ -2083,13 +2150,13 @@ footer { margin-top: 16px; }
         logEntries = [];
       }
     }
-    async function loadUntracked() {
+    async function loadRows() {
       try {
-        untracked = await untrackedExtensions(deps);
-        untrackedError = null;
+        rows = await overview(deps);
+        rowsError = null;
       } catch (e) {
-        untracked = null;
-        untrackedError = describeError(e, t);
+        rows = null;
+        rowsError = describeError(e, t);
       }
     }
     const onFetch = () => guard(async () => {
@@ -2103,7 +2170,7 @@ footer { margin-top: 16px; }
       }
     });
     const afterChange = async () => {
-      await Promise.all([loadRecords(), loadUntracked(), loadLog()]);
+      await Promise.all([loadRecords(), loadRows(), loadLog()]);
     };
     const onInstall = (mode) => guard(async () => {
       if (!prepared) return;
@@ -2136,6 +2203,7 @@ footer { margin-top: 16px; }
           }
         });
         sourcesMessage = { kind: "ok", text: t("result.checked", { count: records.length }) };
+        await loadRows();
       } catch (e) {
         sourcesMessage = { kind: "err", text: describeError(e, t) };
       }
@@ -2146,6 +2214,7 @@ footer { margin-top: 16px; }
       records = records.map((r) => r.id === record.id ? checked : r);
       try {
         await store.save(records);
+        await loadRows();
       } catch (e) {
         sourcesMessage = { kind: "err", text: describeError(e, t) };
       }
@@ -2160,27 +2229,67 @@ footer { margin-top: 16px; }
         sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
       }
     });
-    const onRevisions = (record) => guard(async () => {
+    const recordFor = (extension, record) => record ?? {
+      id: `engine:${extension.id}`,
+      input: "",
+      source: { kind: "manifest-url", url: "" },
+      ref: null,
+      name: extension.name,
+      extensionId: extension.id,
+      installedVersion: extension.version,
+      installedHash: extension.contentHash,
+      installedAt: extension.installedAt,
+      lastCheckedAt: null,
+      latest: null,
+      lastError: null
+    };
+    const onRevisions = (extension) => guard(async () => {
       sourcesMessage = null;
       try {
-        revisionsFor = { id: record.id, list: await revisionsOf(record, deps) };
+        revisionsFor = { id: extension.id, list: extension.revisions ?? (await deps.client.list()).find((x) => x.id === extension.id)?.revisions ?? [] };
       } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
       }
     });
-    const onRollback = (record, revision) => guard(async () => {
+    const onRollback = (extension, record, revision) => guard(async () => {
       sourcesMessage = null;
       revisionsFor = null;
       try {
-        const result = await rollbackSource(record, revision.contentHash, deps);
-        sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash }) };
+        const stub = recordFor(extension, record);
+        if (record) {
+          const result = await rollbackSource(record, revision.contentHash, deps);
+          sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash }) };
+        } else {
+          const result = await deps.client.rollback(stub.extensionId, revision.contentHash);
+          sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.name, hash: result.contentHash }) };
+        }
         await afterChange();
       } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
+      }
+    });
+    const onDisable = (extension) => guard(async () => {
+      sourcesMessage = null;
+      try {
+        await disableExtension(extension, deps);
+        sourcesMessage = { kind: "ok", text: t("result.disabled", { name: extension.name }) };
+        await afterChange();
+      } catch (e) {
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
+      }
+    });
+    const onDelete = (extension) => guard(async () => {
+      deleting = null;
+      sourcesMessage = null;
+      try {
+        await deleteExtension(extension, deps);
+        sourcesMessage = { kind: "ok", text: t("result.deleted", { name: extension.name }) };
+        await afterChange();
+      } catch (e) {
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
       }
     });
     const onForget = (record, deleteFromEngine) => guard(async () => {
-      forgetting = null;
       sourcesMessage = null;
       try {
         await forgetSource(record, deps, deleteFromEngine);
@@ -2200,6 +2309,10 @@ footer { margin-top: 16px; }
       } catch (e) {
         sourcesMessage = { kind: "err", text: e instanceof SyntaxError ? t("error.import.invalid") : describeError(e, t) };
       }
+    });
+    const onRefresh = () => guard(async () => {
+      sourcesMessage = null;
+      await afterChange();
     });
     const startLink = (extension) => {
       linking = extension;
@@ -2314,30 +2427,18 @@ footer { margin-top: 16px; }
         el(
           "dl",
           {},
-          el("dt", {}, t("preview.source")),
-          el("dd", {}, link),
-          p.pkg.ref ? el("dt", {}, t("preview.branch")) : null,
-          p.pkg.ref ? el("dd", {}, p.pkg.ref) : null,
-          el("dt", {}, t("preview.name")),
-          el("dd", {}, d.name),
-          el("dt", {}, t("preview.version")),
-          el("dd", {}, d.version ?? t("preview.none")),
-          el("dt", {}, t("preview.description")),
-          el("dd", {}, d.description || t("preview.none")),
-          el("dt", {}, t("preview.runtime")),
-          el("dd", {}, t(d.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
-          el("dt", {}, t("preview.capabilities")),
-          el("dd", {}, d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
-          el("dt", {}, t("preview.files")),
-          el("dd", {}, files),
-          el("dt", {}, t("preview.downloaded")),
-          el("dd", {}, formatBytes(p.pkg.downloadedBytes)),
-          el("dt", {}, t("preview.hash")),
-          el("dd", {}, el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
-          view ? el("dt", {}, t("preview.engine")) : null,
-          view ? el("dd", {}, t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
-          view ? el("dt", {}, t("preview.changes")) : null,
-          view ? el("dd", {}, changesBlock(p)) : null
+          drow(t("preview.source"), link),
+          p.pkg.ref ? drow(t("preview.branch"), p.pkg.ref) : null,
+          drow(t("preview.name"), d.name),
+          drow(t("preview.version"), d.version ?? t("preview.none")),
+          drow(t("preview.description"), d.description || t("preview.none")),
+          drow(t("preview.runtime"), t(d.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
+          drow(t("preview.capabilities"), d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
+          drow(t("preview.files"), files),
+          drow(t("preview.downloaded"), formatBytes(p.pkg.downloadedBytes)),
+          drow(t("preview.hash"), el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
+          view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
+          view ? drow(t("preview.changes"), changesBlock(p)) : null
         ),
         code,
         p.pkg.readme ? el("details", { class: "readme" }, el("summary", {}, `${t("preview.readme")} (${p.pkg.readme.path})`), el("pre", { class: "readme" }, p.pkg.readme.text)) : null,
@@ -2345,23 +2446,23 @@ footer { margin-top: 16px; }
       );
     }
     function stateLine(r) {
-      if (r.lastError) return el("div", { class: "state error muted" }, t("sources.error", { error: r.lastError }));
-      if (!r.latest) return el("div", { class: "state unknown muted" }, t("sources.state.unknown"));
-      return el("div", { class: `state ${r.latest.state}` }, t(`sources.state.${r.latest.state}`, { version: r.latest.version ?? "?" }));
+      if (r.lastError) return el("div", { class: "state error muted line" }, t("sources.error", { error: r.lastError }));
+      if (!r.latest) return el("div", { class: "state unknown muted line" }, t("sources.state.unknown"));
+      return el("div", { class: `state ${r.latest.state} line` }, t(`sources.state.${r.latest.state}`, { version: r.latest.version ?? "?" }));
     }
-    function revisionsBlock(r) {
-      if (!revisionsFor || revisionsFor.id !== r.id) return null;
+    function revisionsBlock(extension, record) {
+      if (!revisionsFor || revisionsFor.id !== extension.id) return null;
       const list = revisionsFor.list;
       return el(
         "div",
-        { class: "revisions-box" },
+        { class: "revisions-box line" },
         el("div", { class: "muted" }, t("revisions.heading")),
         list.length === 0 ? el("p", { class: "muted" }, t("revisions.none")) : el("ul", { class: "revisions" }, ...list.map((rev) => el(
           "li",
           {},
           t("revisions.item", { version: rev.version ?? "?", savedAt: formatDate(rev.savedAt) ?? rev.savedAt, hash: shortHash(rev.contentHash) }),
           " ",
-          el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRollback(r, rev) }, t("action.rollback"))
+          el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRollback(extension, record, rev) }, t("action.rollback"))
         ))),
         el("button", { class: "small", type: "button", onClick: () => {
           revisionsFor = null;
@@ -2369,56 +2470,123 @@ footer { margin-top: 16px; }
         } }, t("close"))
       );
     }
-    function sourceItem(r) {
-      const needsUpdate = !!r.latest && (r.latest.state === "update" || r.latest.state === "changed" || r.latest.state === "older");
-      const actions = forgetting === r.id ? el(
-        "div",
-        { class: "actions" },
-        el("span", {}, t("action.confirmForget", { name: r.name })),
-        el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(r, false) }, t("action.forget.listOnly")),
-        el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onForget(r, true) }, t("action.forget.engine")),
-        el("button", { class: "small", type: "button", onClick: () => {
-          forgetting = null;
-          render();
-        } }, t("action.cancel"))
-      ) : el(
-        "div",
-        { class: "actions" },
-        el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(r) }, t("action.check")),
-        el("button", { class: `small${needsUpdate ? " primary" : ""}`, type: "button", disabled: busy, onClick: () => onUpdate(r) }, t("action.update")),
-        el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRevisions(r) }, t("action.revisions")),
-        el("a", { href: browseUrl(r.source, r.ref), target: "_blank", rel: "noopener noreferrer" }, t("action.open")),
-        el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => {
-          forgetting = r.id;
-          render();
-        } }, t("action.forget"))
-      );
+    function codeBlock(extension) {
+      if (codeFor !== extension.id) return null;
+      const roles = ["css", "js", "serverJs"].filter((role) => extension[role]);
       return el(
-        "li",
-        { "data-record": r.id },
-        el("div", { class: "name" }, r.name, " ", el("span", { class: "muted" }, `v${r.installedVersion ?? "?"}`)),
-        el("div", { class: "muted" }, describeSource(r.source), r.ref && !(r.source.kind === "github-repo" && r.source.ref) ? ` @${r.ref}` : ""),
-        el("div", { class: "muted" }, `${t("sources.installed")}: ${formatDate(r.installedAt) ?? t("sources.never")} · ${t("sources.lastCheck")}: ${formatDate(r.lastCheckedAt) ?? t("sources.never")} · `, el("code", {}, shortHash(r.installedHash))),
-        stateLine(r),
-        actions,
-        revisionsBlock(r)
+        "div",
+        { class: "line" },
+        ...roles.map((role) => el("details", { open: true }, el("summary", {}, `${role} (${formatBytes(new TextEncoder().encode(extension[role] ?? "").byteLength)})`), el("pre", { class: `code-${role}` }, extension[role] ?? ""))),
+        el("button", { class: "small", type: "button", onClick: () => {
+          codeFor = null;
+          render();
+        } }, t("close"))
       );
     }
-    function untrackedSection() {
-      if (untracked === null && untrackedError === null) return null;
+    function badges(x) {
+      const list = [];
+      if (x.enabled) list.push(el("span", { class: "badge on" }, t("badge.enabled")));
+      else if (x.approvedHash === null) list.push(el("span", { class: "badge approve" }, t("badge.needsApproval")));
+      else list.push(el("span", { class: "badge off" }, t("badge.disabled")));
+      if (x.capabilities.includes("full_page_access")) list.push(el("span", { class: "badge loud" }, "full_page_access"));
+      if (x.runtime === "server") list.push(el("span", { class: "badge" }, t("preview.runtime.server")));
+      if (x.id === host.extensionId) list.push(el("span", { class: "badge" }, "Fetchy"));
+      return list;
+    }
+    function itemRow(extension, record) {
+      const name = extension?.name ?? record?.name ?? "?";
+      const version = extension?.version ?? record?.installedVersion ?? null;
+      const needsUpdate = !!record?.latest && (record.latest.state === "update" || record.latest.state === "changed" || record.latest.state === "older");
+      const actions = [];
+      if (record && extension) {
+        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
+        actions.push(el("button", { class: `small${needsUpdate ? " primary" : ""}`, type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
+        actions.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, t("action.open")));
+      }
+      if (extension && !record) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(extension) }, t("untracked.link")));
+      if (extension) {
+        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
+          codeFor = codeFor === extension.id ? null : extension.id;
+          render();
+        } }, t("action.code")));
+        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRevisions(extension) }, t("action.revisions")));
+        if (extension.enabled && extension.id !== host.extensionId) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onDisable(extension) }, t("action.disable")));
+        if (extension.id !== host.extensionId) actions.push(el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => {
+          deleting = extension.id;
+          render();
+        } }, t("action.delete")));
+      }
+      if (record && !extension) {
+        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
+          urlInput = record.input;
+          prepared = null;
+          render();
+          void onFetch();
+        } }, t("action.reinstall")));
+        actions.push(el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+      }
+      if (record && extension) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+      const confirm = extension && deleting === extension.id ? el(
+        "div",
+        { class: "actions" },
+        el("span", {}, t("action.confirmDelete", { name })),
+        el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onDelete(extension) }, t("action.delete")),
+        el("button", { class: "small", type: "button", onClick: () => {
+          deleting = null;
+          render();
+        } }, t("action.cancel"))
+      ) : el("div", { class: "actions" }, ...actions);
+      return el(
+        "li",
+        { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
+        el("div", { class: "name" }, name, " ", el("span", { class: "muted" }, `v${version ?? "?"}`)),
+        el("div", { class: "line" }, ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))]),
+        extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
+        record ? el("div", { class: "muted line" }, describeSource(record.source), record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "", ` · ${t("sources.lastCheck")}: ${formatDate(record.lastCheckedAt) ?? t("sources.never")}`) : el("div", { class: "muted line" }, t("item.notFromFetchy")),
+        el("div", { class: "muted line" }, el("code", {}, shortHash(extension?.contentHash ?? record?.installedHash ?? "")), extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : ""),
+        record && extension ? stateLine(record) : null,
+        confirm,
+        extension ? revisionsBlock(extension, record) : null,
+        extension ? codeBlock(extension) : null
+      );
+    }
+    function itemsSection() {
+      const list = rows ?? records.map((record) => ({ extension: null, record }));
+      const sorted = [...list].sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
       return el(
         "section",
-        { class: "untracked" },
-        el("h3", {}, t("untracked.heading")),
-        untrackedError ? el("p", { class: "muted" }, t("untracked.unavailable", { error: untrackedError })) : null,
-        untracked && untracked.length === 0 ? el("p", { class: "muted" }, t("untracked.none")) : null,
-        untracked && untracked.length > 0 ? el("p", { class: "note" }, t("untracked.hint")) : null,
-        untracked && untracked.length > 0 ? el("ul", { class: "untracked" }, ...untracked.map((x) => el(
-          "li",
-          { "data-extension": x.id },
-          el("div", { class: "name" }, x.name, " ", el("span", { class: "muted" }, `v${x.version ?? "?"} · ${t(x.enabled ? "preview.engine.enabled" : "preview.engine.disabled")} · ${x.runtime}`)),
-          el("div", { class: "actions" }, el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(x) }, t("untracked.link")))
-        ))) : null
+        { class: "items" },
+        el(
+          "div",
+          { class: "row between" },
+          el("h3", {}, t("items.heading")),
+          el(
+            "div",
+            { class: "row" },
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck")),
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating")),
+            el("button", { class: "small", type: "button", disabled: busy, onClick: onRefresh }, t("action.refresh")),
+            el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
+            el("button", { class: "small", type: "button", onClick: () => {
+              showLog = !showLog;
+              render();
+            } }, t(showLog ? "log.hide" : "log.show")),
+            el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
+              transfer = { kind: "export", text: exportSources(records) };
+              render();
+            } }, t("action.export")),
+            el("button", { class: "small", type: "button", onClick: () => {
+              transfer = { kind: "import", text: "" };
+              render();
+            } }, t("action.import"))
+          )
+        ),
+        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
+        transferBlock(),
+        sorted.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : el("ul", { class: "items" }, ...sorted.map((r) => itemRow(r.extension, r.record))),
+        el("p", { class: "note" }, t("sources.updateNote")),
+        message(reconcileMessage),
+        message(sourcesMessage)
       );
     }
     function transferBlock() {
@@ -2512,7 +2680,7 @@ footer { margin-top: 16px; }
             {},
             t("title"),
             el("span", { class: "ver" }, `v${options.version} · ${t("subtitle")}`),
-            jsDigest ? el("span", { class: "badge", title: t("badge.jsDigest.title") }, t("badge.jsDigest")) : null
+            jsDigest ? el("span", { class: "badge digest", title: t("badge.jsDigest.title") }, t("badge.jsDigest")) : null
           ),
           el(
             "div",
@@ -2562,41 +2730,8 @@ footer { margin-top: 16px; }
           message(installMessage)
         ),
         prepared ? previewSection(prepared) : null,
-        el(
-          "section",
-          { class: "sources" },
-          el(
-            "div",
-            { class: "row between" },
-            el("h3", {}, t("sources.heading")),
-            el(
-              "div",
-              { class: "row" },
-              el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck")),
-              el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating")),
-              el("button", { class: "small", type: "button", onClick: () => {
-                showLog = !showLog;
-                render();
-              } }, t(showLog ? "log.hide" : "log.show")),
-              el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
-              el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
-                transfer = { kind: "export", text: exportSources(records) };
-                render();
-              } }, t("action.export")),
-              el("button", { class: "small", type: "button", onClick: () => {
-                transfer = { kind: "import", text: "" };
-                render();
-              } }, t("action.import"))
-            )
-          ),
-          transferBlock(),
-          records.length === 0 ? el("p", { class: "muted" }, t("sources.empty")) : el("ul", { class: "sources" }, ...records.map(sourceItem)),
-          records.length ? el("p", { class: "note" }, t("sources.updateNote")) : null,
-          message(reconcileMessage),
-          message(sourcesMessage)
-        ),
+        itemsSection(),
         logBlock(),
-        untrackedSection(),
         el("p", { class: "note" }, t("anchor.hint")),
         el("footer", {}, el("p", { class: "muted" }, t("security.note")))
       ));
@@ -2605,7 +2740,7 @@ footer { margin-top: 16px; }
       isOpen = true;
       render();
       panel.focus();
-      void Promise.all([loadPolicy(), loadUntracked(), loadLog(), reconcileRecords()]).then(() => {
+      void Promise.all([loadPolicy(), loadRows(), loadLog(), reconcileRecords()]).then(() => {
         render();
         if (autoCheck && records.length && !busy) void onCheckAll();
       });
@@ -2654,7 +2789,7 @@ footer { margin-top: 16px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.3.0" : "0.0.0";
+  var VERSION = true ? "0.4.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);

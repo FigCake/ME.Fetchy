@@ -3,7 +3,7 @@
   "version": 1,
   "config": {
     "name": "Fetchy",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Installs and updates other External Extensions from a GitHub URL (repository, raw manifest.json or zip). Downloads a package in the browser, shows name, version, capabilities, file sizes and the exact content hash, then creates or updates the record through Marinara's own API. Never executes downloaded code: every install starts disabled until you approve its hash under Settings → Addons → External Extensions. GitHub URL로 다른 외부 확장을 설치·업데이트하는 도구입니다. 내려받은 코드는 실행하지 않으며, 설치된 확장은 사용자가 해시를 승인하기 전까지 비활성입니다.",
     "runtime": "client",
     "capabilities": [
