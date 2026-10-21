@@ -1,4 +1,4 @@
-/*! Fetchy 0.5.1 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.5.2 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -397,16 +397,9 @@
     const button = doc.createElement("button");
     button.type = "button";
     button.id = ANCHOR_BUTTON_ID;
-    button.setAttribute("style", BUTTON_STYLE);
     button.setAttribute("aria-haspopup", "dialog");
     button.textContent = label;
     button.addEventListener("click", onOpen);
-    button.addEventListener("mouseenter", () => {
-      button.style.background = "var(--accent, #383848)";
-    });
-    button.addEventListener("mouseleave", () => {
-      button.style.background = "var(--secondary, #2d2d3a)";
-    });
     let scheduled = false;
     const place = () => {
       scheduled = false;
@@ -416,6 +409,13 @@
         return;
       }
       const row = findImportButtonRow(section);
+      const neighbour = [...row.querySelectorAll("button")].find((b) => b !== button && b.className);
+      if (neighbour) {
+        if (button.className !== neighbour.className) button.className = neighbour.className;
+        if (button.hasAttribute("style")) button.removeAttribute("style");
+      } else if (!button.hasAttribute("style")) {
+        button.setAttribute("style", BUTTON_STYLE);
+      }
       if (button.parentElement !== row) row.appendChild(button);
     };
     const schedule = () => {
@@ -1750,7 +1750,7 @@
     "error.install.unexpected-result": "Marinara's answer does not match what was sent ({message}). Check the extension in Settings → Addons → External Extensions before approving anything.",
     "error.install.not-linkable": "Linking needs Marinara's extension list, which could not be read.",
     "error.import.invalid": "That is not an exported source list.",
-    "anchor.button": "Install from GitHub (Fetchy)",
+    "anchor.button": "Install from GitHub",
     "anchor.hint": "Shortcut: Alt+Shift+F",
     "option.floating": "Floating button",
     "warn.capabilitiesAdded": "MORE AUTHORITY REQUESTED: this version asks for {values}, which the installed extension does not have. Marinara will require a fresh approval of the new hash; read the code before you approve.",
@@ -1949,7 +1949,7 @@
     "error.install.unexpected-result": "Marinara의 응답이 보낸 내용과 다릅니다 ({message}). 승인 전에 설정 → 애드온 → 외부 확장에서 확장을 확인하세요.",
     "error.install.not-linkable": "연결에는 Marinara의 확장 목록이 필요한데 읽을 수 없습니다.",
     "error.import.invalid": "내보낸 소스 목록이 아닙니다.",
-    "anchor.button": "GitHub에서 설치 (Fetchy)",
+    "anchor.button": "GitHub에서 설치",
     "anchor.hint": "단축키: Alt+Shift+F",
     "option.floating": "플로팅 버튼",
     "warn.capabilitiesAdded": "권한 추가 요청: 이 버전은 설치된 확장에 없는 {values} 권한을 요구합니다. Marinara가 새 해시의 승인을 다시 요구하며, 승인 전에 코드를 읽어 보세요.",
@@ -2946,7 +2946,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.5.1" : "0.0.0";
+  var VERSION = true ? "0.5.2" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
