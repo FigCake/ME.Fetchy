@@ -13,6 +13,7 @@ An extension installer for [Marinara Engine](https://github.com/Pasta-Devs/Marin
 * **Export / Import** — The source list as JSON, to move between browsers or Marinara instances. No code, no secrets
 * **Errors that say what to do** — Both External Extension gates, Admin Access, untrusted host, CSRF, CORS, GitHub API rate limit, a source that changed during download
 * **Change log** — Installs, updates, links, rollbacks and removals with versions, hashes and capabilities (last 200; never a secret). Updates that finished while the panel was closed are completed on the next open
+* **Auto re-approval after updates (per extension, off by default)** — When on, Fetchy approves the new code after an update and switches the extension back on. Turning it on requires the same two acknowledgements as Marinara's approval dialog; it applies only to an extension that was on before the update and only when the new version asks for no new capability. **With this on, code the repository owner publishes runs without your review.** Use it only for authors you trust
 * **Authority warnings** — A loud warning when an update asks for new capabilities, or changes code without changing its version
 * **Korean and English UI**, light and dark theme, a bottom sheet on narrow screens
 
@@ -27,7 +28,7 @@ On a remote (non-localhost) Marinara, set `ADMIN_SECRET` in the server `.env` an
 
 ## Is it safe
 
-Fetchy is only a helper. It downloads the code and puts it into Marinara **switched off**; it never runs it. Turning it on is always your act: open Settings → Addons → External Extensions, read the code and approve it with **Review and Run**. If the hash Fetchy showed you matches the one on that screen, the code arrived unchanged.
+Fetchy is only a helper. It downloads the code and puts it into Marinara **switched off**; it never runs it. Turning it on is your act (except for extensions where you switched auto re-approval on): open Settings → Addons → External Extensions, read the code and approve it with **Review and Run**. If the hash Fetchy showed you matches the one on that screen, the code arrived unchanged.
 
 Updates work the same way. New code switches the extension off again until you approve it, so changed code never runs behind your back.
 
