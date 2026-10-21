@@ -1,4 +1,4 @@
-/*! Fetchy 0.4.0 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.4.1 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -1291,6 +1291,7 @@
     };
     try {
       const result = await installUnlogged(prepared, deps, mode);
+      if (result.self) return result;
       await log(deps, { ...base, action: result.mode.kind === "create" ? "install" : result.mode.kind, extensionId: result.extension.id, result: "ok", detail: null, to: sideOf(result.extension) });
       return result;
     } catch (e) {
@@ -1307,14 +1308,14 @@
       await verifyAnswer(prepared, extension2, true);
       const record2 = recordFrom(prepared, extension2, previous, now, extension2.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: extension2, mode, codeChanged: true };
+      return { record: record2, extension: extension2, mode, codeChanged: true, self: false };
     }
     const current = (await deps.client.list()).find((x) => x.id === mode.extensionId) ?? null;
     if (!current) throw new EngineApiError("not-found", 404, `Marinara has no extension ${mode.extensionId}`);
     if (mode.kind === "link") {
       const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode, codeChanged: false };
+      return { record: record2, extension: current, mode, codeChanged: false, self: false };
     }
     if (prepared.engine && prepared.engine.record.id === current.id && prepared.engine.record.contentHash !== current.contentHash) {
       throw new InstallError("record-changed", `the extension's code changed since the preview (${prepared.engine.record.contentHash} → ${current.contentHash})`);
@@ -1325,24 +1326,40 @@
     if (current.contentHash === prepared.contentHash) {
       const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false };
+      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false, self: false };
     }
     const isSelf = deps.selfId != null && current.id === deps.selfId;
     if (isSelf) {
-      await deps.store.upsert(recordFrom(prepared, { ...current, version: prepared.draft.version, contentHash: prepared.contentHash }, previous, now, prepared.contentHash));
+      const expected = recordFrom(prepared, { ...current, version: prepared.draft.version, contentHash: prepared.contentHash }, previous, now, prepared.contentHash);
+      await deps.store.upsert(expected);
+      await log(deps, {
+        action: "update",
+        result: "ok",
+        extensionId: current.id,
+        name: prepared.draft.name,
+        source: prepared.input,
+        ref: prepared.pkg.ref,
+        from: sideOf(current),
+        to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash),
+        detail: "self-update: recorded before the PATCH; Fetchy is switched off until the new code is approved"
+      });
+      let extension2;
+      try {
+        extension2 = await deps.client.update(current.id, prepared.draft);
+      } catch (e) {
+        if (previous) await deps.store.upsert(previous);
+        else await deps.store.remove(expected.id);
+        await log(deps, { action: "update", result: "failed", extensionId: current.id, name: prepared.draft.name, source: prepared.input, ref: prepared.pkg.ref, from: sideOf(current), to: null, detail: e instanceof Error ? e.message : String(e) });
+        throw e;
+      }
+      await verifyAnswer(prepared, extension2, true);
+      return { record: expected, extension: extension2, mode, codeChanged: true, self: true };
     }
-    let extension;
-    try {
-      extension = await deps.client.update(current.id, prepared.draft);
-    } catch (e) {
-      if (isSelf && previous) await deps.store.upsert(previous);
-      else if (isSelf) await deps.store.remove((await deps.store.load()).find((r) => r.extensionId === current.id)?.id ?? "");
-      throw e;
-    }
+    const extension = await deps.client.update(current.id, prepared.draft);
     await verifyAnswer(prepared, extension, true);
     const record = recordFrom(prepared, extension, previous, now, extension.contentHash);
     await deps.store.upsert(record);
-    return { record, extension, mode, codeChanged: true };
+    return { record, extension, mode, codeChanged: true, self: false };
   }
   function pinned(record) {
     return record.source.kind === "github-repo" && record.ref && !record.source.ref ? { ...record.source, ref: record.ref } : record.source;
@@ -1727,7 +1744,8 @@
     "action.delete": "Delete",
     "action.confirmDelete": "Delete “{name}” from Marinara?",
     "action.reinstall": "Install again",
-    "result.disabled": "Switched “{name}” off."
+    "result.disabled": "Switched “{name}” off.",
+    "result.selfUpdated": "Fetchy updated itself to {hash}. Marinara is switching this copy off now. Approve the new code in Settings → Addons → External Extensions → Fetchy → Review and Run, then the new Fetchy starts."
   };
   var ko = {
     "title": "Fetchy",
@@ -1913,7 +1931,8 @@
     "action.delete": "삭제",
     "action.confirmDelete": "“{name}”을(를) Marinara에서 삭제할까요?",
     "action.reinstall": "다시 설치",
-    "result.disabled": "“{name}”을(를) 껐습니다."
+    "result.disabled": "“{name}”을(를) 껐습니다.",
+    "result.selfUpdated": "Fetchy가 자신을 {hash} 로 업데이트했습니다. Marinara가 지금 이 Fetchy를 끕니다. 설정 → 애드온 → 외부 확장 → Fetchy → Review and Run에서 새 코드를 승인하면 새 Fetchy가 시작됩니다."
   };
   function detectLang(language) {
     return language?.toLowerCase().startsWith("ko") ? "ko" : "en";
@@ -2078,6 +2097,7 @@ footer { margin-top: 18px; }
     let showLog = false;
     let logEntries = [];
     let reconcileMessage = null;
+    let retired = false;
     const jsDigest = digestBackend() === "javascript";
     const audit = new AuditLog(host.storage);
     deps.audit = audit;
@@ -2108,7 +2128,7 @@ footer { margin-top: 18px; }
     };
     doc.addEventListener("keydown", onShortcut);
     const guard = async (fn) => {
-      if (busy) return;
+      if (busy || retired) return;
       busy = true;
       render();
       try {
@@ -2177,12 +2197,16 @@ footer { margin-top: 18px; }
       const name = prepared.draft.name;
       try {
         const result = await install(prepared, deps, mode);
-        const key = result.mode.kind === "create" ? "result.created" : result.codeChanged ? "result.updated" : "result.linked";
+        const key = result.self ? "result.selfUpdated" : result.mode.kind === "create" ? "result.created" : result.codeChanged ? "result.updated" : "result.linked";
         installMessage = { kind: "ok", text: t(key, { name: result.extension.name, hash: result.extension.contentHash }) };
         prepared = null;
         pendingExistingId = null;
         linking = null;
         urlInput = "";
+        if (result.self) {
+          retired = true;
+          return;
+        }
         await afterChange();
       } catch (e) {
         if (e instanceof EngineApiError && e.code === "name-exists" && e.existingId) {
@@ -2223,7 +2247,11 @@ footer { margin-top: 18px; }
       sourcesMessage = null;
       try {
         const result = await updateSource(record, deps);
-        sourcesMessage = { kind: "ok", text: t(result.codeChanged ? "result.updated" : "result.linked", { name: result.extension.name, hash: result.extension.contentHash }) };
+        sourcesMessage = { kind: "ok", text: t(result.self ? "result.selfUpdated" : result.codeChanged ? "result.updated" : "result.linked", { name: result.extension.name, hash: result.extension.contentHash }) };
+        if (result.self) {
+          retired = true;
+          return;
+        }
         await afterChange();
       } catch (e) {
         sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
@@ -2789,7 +2817,7 @@ footer { margin-top: 18px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.4.0" : "0.0.0";
+  var VERSION = true ? "0.4.1" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
