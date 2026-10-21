@@ -22,7 +22,7 @@ An extension installer for [Marinara Engine](https://github.com/Pasta-Devs/Marin
 1. In the server `.env`, set `ENABLE_EXTERNAL_EXTENSIONS=true` and restart Marinara
 2. Settings → Addons → External Extensions: turn on **Allow third-party extension imports**, then import `ME-Fetchy-<version>.zip`
 3. Open **Fetchy** in the list → **Review and Run**: read the code and approve the hash (it must equal the one in `SHA256SUMS.txt`)
-4. An **Install from GitHub (Fetchy)** button appears next to the import buttons on that same screen (Settings → Addons → External Extensions). Shortcut: Alt+Shift+F; a floating button can be turned on in the panel
+4. An **Install from GitHub (Fetchy)** button appears next to the import buttons on that same screen (Settings → Addons → External Extensions). Shortcut: Alt+Shift+F; a floating button can be turned on under Options. Explanations sit behind the small (?) marks
 
 On a remote (non-localhost) Marinara, set `ADMIN_SECRET` in the server `.env` and enter it under Settings → Admin Access. To update Fetchy itself, add `FigCake/ME.Fetchy` as a source.
 
