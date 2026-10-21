@@ -1,4 +1,4 @@
-/*! Fetchy 0.4.1 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.5.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -227,6 +227,12 @@
       async update(id, draft) {
         return (await request("PATCH", idPath(id), apiPayload(draft))).json();
       },
+      async approve(id, contentHash, fullPageAccess) {
+        if (!/^sha256:[a-f0-9]{64}$/.test(contentHash)) throw new EngineApiError("validation", 400, `Not a content hash: ${contentHash}`);
+        const body = { contentHash, acknowledgeSandboxedCode: true };
+        if (fullPageAccess) body.acknowledgeFullPageAccess = true;
+        return (await request("POST", `${idPath(id)}/approve`, body)).json();
+      },
       async disable(id) {
         return (await request("PATCH", idPath(id), { enabled: false })).json();
       },
@@ -328,7 +334,8 @@
       installedAt: str(value.installedAt) ?? "",
       lastCheckedAt: str(value.lastCheckedAt),
       latest: parseLatest(value.latest),
-      lastError: str(value.lastError)
+      lastError: str(value.lastError),
+      autoApprove: value.autoApprove === true
     };
   }
   function newRecordId() {
@@ -1182,6 +1189,24 @@
   }
 
   // src/installer.ts
+  async function autoApprove(previous, before, after, draft, deps) {
+    if (!previous?.autoApprove) return { approved: false, notApproved: "off", approveError: null };
+    if (!before.enabled) return { approved: false, notApproved: "was-off", approveError: null };
+    const grew = draft.capabilities.filter((c) => !before.capabilities.includes(c));
+    if (grew.length) {
+      await log(deps, { action: "approve", result: "refused", extensionId: after.id, name: after.name, source: previous.input, ref: previous.ref, from: sideOf(before), to: sideOf(after), detail: `capabilities grew: ${grew.join(", ")}; manual approval required` });
+      return { approved: false, notApproved: "capabilities-grew", approveError: null };
+    }
+    try {
+      const approved = await deps.client.approve(after.id, after.contentHash, draft.capabilities.includes(FULL_PAGE_ACCESS));
+      await log(deps, { action: "approve", result: "ok", extensionId: after.id, name: after.name, source: previous.input, ref: previous.ref, from: sideOf(before), to: sideOf(approved), detail: "auto re-approval (user opt-in)" });
+      return { approved: approved.enabled && approved.approvedHash === after.contentHash, notApproved: null, approveError: null };
+    } catch (e) {
+      await log(deps, { action: "approve", result: "failed", extensionId: after.id, name: after.name, source: previous.input, ref: previous.ref, from: sideOf(before), to: sideOf(after), detail: e instanceof Error ? e.message : String(e) });
+      return { approved: false, notApproved: "failed", approveError: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  var NO_APPROVAL = { approved: false, notApproved: null, approveError: null };
   var InstallError = class extends Error {
     constructor(problem, message) {
       super(message);
@@ -1267,7 +1292,8 @@
       installedAt: iso,
       lastCheckedAt: iso,
       latest: { version: prepared.draft.version, hash: prepared.contentHash, state, checkedAt: iso },
-      lastError: null
+      lastError: null,
+      autoApprove: previous?.autoApprove === true
     };
   }
   async function verifyAnswer(prepared, extension, codeChanged) {
@@ -1308,14 +1334,14 @@
       await verifyAnswer(prepared, extension2, true);
       const record2 = recordFrom(prepared, extension2, previous, now, extension2.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: extension2, mode, codeChanged: true, self: false };
+      return { record: record2, extension: extension2, mode, codeChanged: true, self: false, ...NO_APPROVAL };
     }
     const current = (await deps.client.list()).find((x) => x.id === mode.extensionId) ?? null;
     if (!current) throw new EngineApiError("not-found", 404, `Marinara has no extension ${mode.extensionId}`);
     if (mode.kind === "link") {
       const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode, codeChanged: false, self: false };
+      return { record: record2, extension: current, mode, codeChanged: false, self: false, ...NO_APPROVAL };
     }
     if (prepared.engine && prepared.engine.record.id === current.id && prepared.engine.record.contentHash !== current.contentHash) {
       throw new InstallError("record-changed", `the extension's code changed since the preview (${prepared.engine.record.contentHash} → ${current.contentHash})`);
@@ -1326,7 +1352,7 @@
     if (current.contentHash === prepared.contentHash) {
       const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
       await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false, self: false };
+      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false, self: false, ...NO_APPROVAL };
     }
     const isSelf = deps.selfId != null && current.id === deps.selfId;
     if (isSelf) {
@@ -1353,13 +1379,15 @@
         throw e;
       }
       await verifyAnswer(prepared, extension2, true);
-      return { record: expected, extension: extension2, mode, codeChanged: true, self: true };
+      const approval2 = await autoApprove(previous, current, extension2, prepared.draft, { client: deps.client });
+      return { record: expected, extension: extension2, mode, codeChanged: true, self: true, ...approval2 };
     }
     const extension = await deps.client.update(current.id, prepared.draft);
     await verifyAnswer(prepared, extension, true);
-    const record = recordFrom(prepared, extension, previous, now, extension.contentHash);
+    const approval = await autoApprove(previous, current, extension, prepared.draft, deps);
+    const record = { ...recordFrom(prepared, extension, previous, now, extension.contentHash), autoApprove: previous?.autoApprove === true };
     await deps.store.upsert(record);
-    return { record, extension, mode, codeChanged: true, self: false };
+    return { record, extension, mode, codeChanged: true, self: false, ...approval };
   }
   function pinned(record) {
     return record.source.kind === "github-repo" && record.ref && !record.source.ref ? { ...record.source, ref: record.ref } : record.source;
@@ -1481,6 +1509,12 @@
     });
     if (changed.length) await deps.store.save(next);
     return changed;
+  }
+  async function setAutoApprove(record, value, deps) {
+    const updated = { ...record, autoApprove: value };
+    await deps.store.upsert(updated);
+    await log(deps, { action: "approve", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "auto re-approval switched on by the user" : "auto re-approval switched off" });
+    return updated;
   }
   async function disableExtension(extension, deps) {
     try {
@@ -1745,6 +1779,18 @@
     "action.confirmDelete": "Delete “{name}” from Marinara?",
     "action.reinstall": "Install again",
     "result.disabled": "Switched “{name}” off.",
+    "result.updatedAndOn": "Updated “{name}” and switched it back on (auto re-approval). New hash: {hash}",
+    "result.notApproved.capabilities-grew": "Updated “{name}”, but it stays off: this version asks for new capabilities, so auto re-approval did not apply. Review it in Settings → Addons → External Extensions → Review and Run. New hash: {hash}",
+    "result.notApproved.failed": "Updated “{name}”, but re-approval failed ({error}). It stays off until you approve it in Settings → Addons → External Extensions. New hash: {hash}",
+    "auto.label": "Auto re-approve after updates",
+    "auto.badge": "auto re-approve",
+    "auto.confirm.title": "Switch on auto re-approval for “{name}”?",
+    "auto.confirm.body": "After every update of this extension, Fetchy will approve the new code and switch it back on without you reading it. Code published at {source} will then run in your Marinara as soon as you press Update. Fetchy still refuses when a version asks for new capabilities, and never applies this to an extension that was off.",
+    "auto.ack.code": "I understand that updated code from this source will run without my review.",
+    "auto.ack.fullPage": "I understand this extension has full page access: it can read and change everything in Marinara, including API keys and chats.",
+    "auto.confirm.on": "Switch on",
+    "auto.on": "Auto re-approval is on for “{name}”.",
+    "auto.off": "Auto re-approval is off for “{name}”.",
     "result.selfUpdated": "Fetchy updated itself to {hash}. Marinara is switching this copy off now. Approve the new code in Settings → Addons → External Extensions → Fetchy → Review and Run, then the new Fetchy starts."
   };
   var ko = {
@@ -1932,6 +1978,18 @@
     "action.confirmDelete": "“{name}”을(를) Marinara에서 삭제할까요?",
     "action.reinstall": "다시 설치",
     "result.disabled": "“{name}”을(를) 껐습니다.",
+    "result.updatedAndOn": "“{name}” 업데이트하고 다시 켰습니다 (자동 승인). 새 해시: {hash}",
+    "result.notApproved.capabilities-grew": "“{name}” 업데이트했지만 꺼진 채로 둡니다. 이 버전은 새 권한을 요구해서 자동 승인을 적용하지 않았습니다. 설정 → 애드온 → 외부 확장 → Review and Run에서 직접 확인하세요. 새 해시: {hash}",
+    "result.notApproved.failed": "“{name}” 업데이트했지만 다시 승인하지 못했습니다 ({error}). 설정 → 애드온 → 외부 확장에서 승인할 때까지 꺼져 있습니다. 새 해시: {hash}",
+    "auto.label": "업데이트 후 자동 승인",
+    "auto.badge": "자동 승인",
+    "auto.confirm.title": "“{name}”의 자동 승인을 켤까요?",
+    "auto.confirm.body": "이 확장을 업데이트할 때마다 Fetchy가 새 코드를 읽어 보지 않고 승인해 다시 켭니다. 즉 {source} 에 올라온 코드가 업데이트 버튼을 누르는 순간 내 Marinara에서 실행됩니다. 새 권한을 요구하는 버전은 자동 승인하지 않고, 꺼져 있던 확장에는 적용하지 않습니다.",
+    "auto.ack.code": "이 소스의 업데이트된 코드가 내 검토 없이 실행된다는 것을 이해합니다.",
+    "auto.ack.fullPage": "이 확장은 전체 페이지 접근 권한이 있어 Marinara의 모든 것(API 키, 채팅 포함)을 읽고 바꿀 수 있다는 것을 이해합니다.",
+    "auto.confirm.on": "켜기",
+    "auto.on": "“{name}”의 자동 승인을 켰습니다.",
+    "auto.off": "“{name}”의 자동 승인을 껐습니다.",
     "result.selfUpdated": "Fetchy가 자신을 {hash} 로 업데이트했습니다. Marinara가 지금 이 Fetchy를 끕니다. 설정 → 애드온 → 외부 확장 → Fetchy → Review and Run에서 새 코드를 승인하면 새 Fetchy가 시작됩니다."
   };
   function detectLang(language) {
@@ -2088,6 +2146,7 @@ footer { margin-top: 18px; }
     let rowsError = null;
     let codeFor = null;
     let deleting = null;
+    let autoFor = null;
     let installMessage = null;
     let sourcesMessage = null;
     let urlInput = "";
@@ -2192,13 +2251,33 @@ footer { margin-top: 18px; }
     const afterChange = async () => {
       await Promise.all([loadRecords(), loadRows(), loadLog()]);
     };
+    function resultMessage(result) {
+      const params = { name: result.extension.name, hash: result.extension.contentHash, error: result.approveError ?? "" };
+      if (result.self) return { kind: "ok", text: t("result.selfUpdated", params) };
+      if (result.mode.kind === "create") return { kind: "ok", text: t("result.created", params) };
+      if (!result.codeChanged) return { kind: "ok", text: t("result.linked", params) };
+      if (result.approved) return { kind: "ok", text: t("result.updatedAndOn", params) };
+      if (result.notApproved === "capabilities-grew") return { kind: "warn", text: t("result.notApproved.capabilities-grew", params) };
+      if (result.notApproved === "failed") return { kind: "err", text: t("result.notApproved.failed", params) };
+      return { kind: "ok", text: t("result.updated", params) };
+    }
+    const onAutoApprove = (record, value) => guard(async () => {
+      autoFor = null;
+      sourcesMessage = null;
+      try {
+        await setAutoApprove(record, value, deps);
+        sourcesMessage = { kind: "ok", text: t(value ? "auto.on" : "auto.off", { name: record.name }) };
+        await afterChange();
+      } catch (e) {
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
+      }
+    });
     const onInstall = (mode) => guard(async () => {
       if (!prepared) return;
       const name = prepared.draft.name;
       try {
         const result = await install(prepared, deps, mode);
-        const key = result.self ? "result.selfUpdated" : result.mode.kind === "create" ? "result.created" : result.codeChanged ? "result.updated" : "result.linked";
-        installMessage = { kind: "ok", text: t(key, { name: result.extension.name, hash: result.extension.contentHash }) };
+        installMessage = resultMessage(result);
         prepared = null;
         pendingExistingId = null;
         linking = null;
@@ -2247,7 +2326,7 @@ footer { margin-top: 18px; }
       sourcesMessage = null;
       try {
         const result = await updateSource(record, deps);
-        sourcesMessage = { kind: "ok", text: t(result.self ? "result.selfUpdated" : result.codeChanged ? "result.updated" : "result.linked", { name: result.extension.name, hash: result.extension.contentHash }) };
+        sourcesMessage = resultMessage(result);
         if (result.self) {
           retired = true;
           return;
@@ -2521,6 +2600,35 @@ footer { margin-top: 18px; }
       if (x.id === host.extensionId) list.push(el("span", { class: "badge" }, "Fetchy"));
       return list;
     }
+    function autoApproveConfirm(record, extension) {
+      if (!autoFor || autoFor.id !== record.id) return null;
+      const state = autoFor;
+      const fullPage = extension.capabilities.includes("full_page_access");
+      const ready2 = state.code && (!fullPage || state.fullPage);
+      return el(
+        "div",
+        { class: "msg loud auto-confirm" },
+        el("div", {}, t("auto.confirm.title", { name: record.name })),
+        el("p", { class: "line", style: "font-weight:400" }, t("auto.confirm.body", { source: describeSource(record.source) })),
+        el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
+          state.code = e.target.checked;
+          render();
+        } }), t("auto.ack.code")),
+        fullPage ? el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-full-page", onChange: (e) => {
+          state.fullPage = e.target.checked;
+          render();
+        } }), t("auto.ack.fullPage")) : null,
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "small primary", type: "button", disabled: busy || !ready2, onClick: () => onAutoApprove(record, true) }, t("auto.confirm.on")),
+          el("button", { class: "small", type: "button", onClick: () => {
+            autoFor = null;
+            render();
+          } }, t("action.cancel"))
+        )
+      );
+    }
     function itemRow(extension, record) {
       const name = extension?.name ?? record?.name ?? "?";
       const version = extension?.version ?? record?.installedVersion ?? null;
@@ -2553,7 +2661,24 @@ footer { margin-top: 18px; }
         } }, t("action.reinstall")));
         actions.push(el("button", { class: "small danger", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
       }
-      if (record && extension) actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+      if (record && extension) {
+        actions.push(el("label", { class: "toggle" }, el("input", {
+          type: "checkbox",
+          class: "auto-approve",
+          checked: record.autoApprove === true,
+          disabled: busy,
+          onChange: (e) => {
+            const on = e.target.checked;
+            if (!on) {
+              void onAutoApprove(record, false);
+              return;
+            }
+            autoFor = { id: record.id, code: false, fullPage: false };
+            render();
+          }
+        }), t("auto.label")));
+        actions.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+      }
       const confirm = extension && deleting === extension.id ? el(
         "div",
         { class: "actions" },
@@ -2568,12 +2693,13 @@ footer { margin-top: 18px; }
         "li",
         { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
         el("div", { class: "name" }, name, " ", el("span", { class: "muted" }, `v${version ?? "?"}`)),
-        el("div", { class: "line" }, ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))]),
+        el("div", { class: "line" }, ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))], record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null),
         extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
         record ? el("div", { class: "muted line" }, describeSource(record.source), record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "", ` · ${t("sources.lastCheck")}: ${formatDate(record.lastCheckedAt) ?? t("sources.never")}`) : el("div", { class: "muted line" }, t("item.notFromFetchy")),
         el("div", { class: "muted line" }, el("code", {}, shortHash(extension?.contentHash ?? record?.installedHash ?? "")), extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : ""),
         record && extension ? stateLine(record) : null,
         confirm,
+        record && extension ? autoApproveConfirm(record, extension) : null,
         extension ? revisionsBlock(extension, record) : null,
         extension ? codeBlock(extension) : null
       );
@@ -2817,7 +2943,7 @@ footer { margin-top: 18px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.4.1" : "0.0.0";
+  var VERSION = true ? "0.5.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
