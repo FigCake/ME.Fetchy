@@ -1,4 +1,4 @@
-/*! Fetchy 0.7.0 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.7.1 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -1662,9 +1662,9 @@
     "result.selfUpdatedOn": "Updated Fetchy and switched it back on.",
     "action.updateAll": "Update all",
     "option.keepEnabled": "Keep updated extensions on",
-    "help.keepEnabled": "When an updated extension was on, approve the new code and switch it back on right away, without reading it. Not applied when the new version asks for new capabilities.",
+    "help.keepEnabled": "Whenever an extension that was on gets updated, here or with Update all, approve the new code and switch it back on right away, without reading it. Not applied when the new version asks for new capabilities.",
     "keep.confirm.title": "Keep updated extensions on?",
-    "keep.confirm.body": "Fetchy will approve updated code and switch extensions back on without you reading it. Code published by those repositories will then run in your Marinara as soon as you press Update all. Versions that ask for new capabilities are never approved this way.",
+    "keep.confirm.body": "Fetchy will approve updated code and switch extensions back on without you reading it, for every update made here. Code published by those repositories will then run in your Marinara as soon as you press Update. Versions that ask for new capabilities are never approved this way.",
     "result.updatedAll": "Updated {ok} of {total}.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": 'Nothing to update. Press "Check all" first.',
@@ -1880,9 +1880,9 @@
     "result.selfUpdatedOn": "Fetchy 업데이트하고 다시 켰습니다.",
     "action.updateAll": "모두 업데이트",
     "option.keepEnabled": "업데이트한 확장 켜 두기",
-    "help.keepEnabled": "켜져 있던 확장을 업데이트하면 새 코드를 읽지 않고 승인해 바로 다시 켭니다. 새 권한을 요구하는 버전에는 적용하지 않습니다.",
+    "help.keepEnabled": "켜져 있던 확장을 업데이트하면(개별이든 “모두 업데이트”든) 새 코드를 읽지 않고 승인해 바로 다시 켭니다. 새 권한을 요구하는 버전에는 적용하지 않습니다.",
     "keep.confirm.title": "업데이트한 확장을 켜 둘까요?",
-    "keep.confirm.body": "Fetchy가 업데이트된 코드를 읽어 보지 않고 승인해 다시 켭니다. 즉 그 저장소들에 올라온 코드가 “모두 업데이트”를 누르는 순간 내 Marinara에서 실행됩니다. 새 권한을 요구하는 버전은 이 방식으로 승인하지 않습니다.",
+    "keep.confirm.body": "여기서 하는 모든 업데이트에서 Fetchy가 업데이트된 코드를 읽어 보지 않고 승인해 다시 켭니다. 즉 그 저장소들에 올라온 코드가 업데이트를 누르는 순간 내 Marinara에서 실행됩니다. 새 권한을 요구하는 버전은 이 방식으로 승인하지 않습니다.",
     "result.updatedAll": "{total}개 중 {ok}개 업데이트했습니다.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": "업데이트할 것이 없습니다. 먼저 “모두 확인”을 누르세요.",
@@ -2343,7 +2343,7 @@ footer { margin-top: 20px; }
       if (!prepared) return;
       const name = prepared.draft.name;
       try {
-        const result = await install(prepared, deps, mode);
+        const result = await install(prepared, { ...deps, approveNow: keepEnabled }, mode);
         installMessage = resultMessage(result);
         prepared = null;
         pendingExistingId = null;
@@ -2392,7 +2392,7 @@ footer { margin-top: 20px; }
     const onUpdate = (record) => guard(async () => {
       sourcesMessage = null;
       try {
-        const result = await updateSource(record, deps);
+        const result = await updateSource(record, { ...deps, approveNow: keepEnabled });
         sourcesMessage = resultMessage(result);
         if (result.self) {
           retired = true;
@@ -3111,7 +3111,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.7.0" : "0.0.0";
+  var VERSION = true ? "0.7.1" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
