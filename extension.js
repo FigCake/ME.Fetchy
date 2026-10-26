@@ -1,4 +1,4 @@
-/*! Fetchy 0.7.1 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.7.2 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: CC BY-NC 4.0 */
@@ -2139,6 +2139,7 @@ dl > div { display: flex; gap: 12px; padding: 4px 0; }
 dt { flex: 0 0 110px; color: var(--muted); } dd { flex: 1 1 auto; margin: 0; min-width: 0; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--soft); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
 details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); }
+details.fold details.fold { margin-top: 12px; }
 pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--soft); padding: 10px 12px; border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
 ul.files, ul.changes, ul.revisions { margin: 4px 0 0; padding-left: 18px; }
 ul.items { list-style: none; margin: 0; padding: 0; }
@@ -2220,7 +2221,7 @@ footer { margin-top: 20px; }
     let transfer = null;
     let autoCheck = false;
     let floating = false;
-    let showLog = false;
+    const folds = /* @__PURE__ */ new Set();
     let logEntries = [];
     let reconcileMessage = null;
     let retired = false;
@@ -2884,20 +2885,14 @@ footer { margin-top: 20px; }
         sorted.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : el("ul", { class: "items" }, ...sorted.map((r) => itemRow(r.extension, r.record))),
         message(reconcileMessage),
         message(sourcesMessage),
-        el(
-          "details",
-          { class: "prefs" },
-          el("summary", {}, t("prefs.heading")),
+        fold(
+          "prefs",
+          [t("prefs.heading")],
           el(
             "div",
             { class: "actions" },
             el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
             el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating"), help(t("help.floating"))),
-            el("button", { class: "small", type: "button", onClick: () => {
-              showLog = !showLog;
-              render();
-            } }, t(showLog ? "log.hide" : "log.show")),
-            help(t("help.log")),
             el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
               transfer = { kind: "export", text: exportSources(records) };
               render();
@@ -2960,35 +2955,33 @@ footer { margin-top: 20px; }
         )
       );
     }
+    function fold(key, summary, ...body) {
+      const node = el("details", { class: `fold ${key}`, open: folds.has(key) }, el("summary", {}, ...summary), ...body);
+      node.addEventListener("toggle", () => {
+        if (node.open) folds.add(key);
+        else folds.delete(key);
+      });
+      return node;
+    }
     function logBlock() {
-      if (!showLog) return null;
       const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
-      return el(
-        "section",
-        { class: "log" },
+      return fold(
+        "log",
+        [t("log.heading"), help(t("help.log"))],
         el(
           "div",
-          { class: "row between" },
-          el("h3", {}, t("log.heading")),
-          el(
-            "div",
-            { class: "row" },
-            el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => {
-              void navigator.clipboard?.writeText(AuditLog.format(logEntries)).then(() => {
-                sourcesMessage = { kind: "ok", text: t("result.copied") };
-                render();
-              }).catch(() => {
-              });
-            } }, t("log.export")),
-            el("button", { class: "small danger", type: "button", disabled: logEntries.length === 0, onClick: () => guard(async () => {
-              await audit.clear();
-              await loadLog();
-            }) }, t("log.clear")),
-            el("button", { class: "small", type: "button", onClick: () => {
-              showLog = false;
+          { class: "actions" },
+          el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => {
+            void navigator.clipboard?.writeText(AuditLog.format(logEntries)).then(() => {
+              sourcesMessage = { kind: "ok", text: t("result.copied") };
               render();
-            } }, t("log.hide"))
-          )
+            }).catch(() => {
+            });
+          } }, t("log.export")),
+          el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => guard(async () => {
+            await audit.clear();
+            await loadLog();
+          }) }, t("log.clear"))
         ),
         logEntries.length === 0 ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
       );
@@ -3111,7 +3104,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.7.1" : "0.0.0";
+  var VERSION = true ? "0.7.2" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);

@@ -1,5 +1,5 @@
-705da43c5c71d20c2747212cbdc394952b0f77f954b4f0a3074921c599764cc1  extension.js
-1f009b7ea1b44ece2485a8d6a01a79088050b813aa56cd03ec17af9102d8df34  manifest.json
+8d38a9bfbc619f92e419e2cbda7b9bb5749d180fba623931213a81f5c2f90f90  extension.js
+922c4e6d49f00d47f8538102fd44cc1926db4af4e70ff89ae608690cf4cd37ed  manifest.json
 3666aed61566cf0ea658569f3bb4cefdb7fbf3551d48ebcca999a79d01d34df2  README-ko.txt
 
-Marinara content hash (shown in "Review and Run"): sha256:01075d56f64dd15903f6fc8c1016555bdbf445faa2e21519ff959df1272df53a
+Marinara content hash (shown in "Review and Run"): sha256:c61823659af0e62c65b3e08100deba0069b1e0bdd1a13e5750657038221a78e7
