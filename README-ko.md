@@ -55,4 +55,4 @@ extension.js       ← manifest.json의 jsPath가 가리키는 파일
 * Marinara Engine 2.5.0 이상, 외부 확장 허용
 * zip 소스를 쓰려면 `DecompressionStream`을 지원하는 브라우저 (Chrome, Edge, Firefox, Safari 16.4+)
 
-License: CC BY-NC 4.0.
+License: MIT.

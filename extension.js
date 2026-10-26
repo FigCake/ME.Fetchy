@@ -1,7 +1,7 @@
-/*! Fetchy 0.7.2 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.7.3 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
- * License: CC BY-NC 4.0 */
+ * License: MIT */
 "use strict";
 (() => {
   // src/manifest.ts
@@ -3104,7 +3104,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.7.2" : "0.0.0";
+  var VERSION = true ? "0.7.3" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);

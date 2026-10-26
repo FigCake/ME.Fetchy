@@ -55,4 +55,4 @@ Put them at the top of the repository and users type `owner/repo`. They can also
 * Marinara Engine 2.5.0 or newer, with External Extensions enabled
 * A browser with `DecompressionStream` (Chrome, Edge, Firefox, Safari 16.4+) for zip sources
 
-License: CC BY-NC 4.0.
+License: MIT.
