@@ -1,4 +1,4 @@
-/*! Fetchy 0.7.3 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.8.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: MIT */
@@ -874,7 +874,7 @@
           manifest,
           normalized,
           browseUrl: browseUrl(source, ref),
-          readme: await readme((name) => fetchText(rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${name}` : name), options, MAX_README_BYTES, budget)),
+          readme: options.readme === false ? null : await readme((name) => fetchText(rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${name}` : name), options, MAX_README_BYTES, budget)),
           downloadedBytes: budget.used
         };
       }
@@ -902,7 +902,7 @@
       manifest,
       normalized,
       browseUrl: source.url,
-      readme: await readme((name) => fetchText(resolve(name), options, MAX_README_BYTES, budget)),
+      readme: options.readme === false ? null : await readme((name) => fetchText(resolve(name), options, MAX_README_BYTES, budget)),
       downloadedBytes: budget.used
     };
   }
@@ -960,7 +960,7 @@
       normalized,
       manifestUrl,
       browseUrl: source.url,
-      readme: await readme(async (name) => {
+      readme: options.readme === false ? null : await readme(async (name) => {
         const entry = lookup(name);
         return entry ? readEntry(entry, MAX_README_BYTES) : null;
       }),
@@ -1258,7 +1258,7 @@
   }
   async function prepare(input, deps, options = {}) {
     const source = parseSourceUrl(input);
-    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest });
+    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest, readme: options.readme });
     const draft = pkg.normalized.draft;
     const contentHash = await engineContentHash(draft);
     const records = await deps.store.load();
@@ -1624,6 +1624,26 @@
     "gate.env": "External Extensions are locked. Set ENABLE_EXTERNAL_EXTENSIONS=true in the server .env and restart Marinara.",
     "gate.switch": "External Extensions are locked. Turn on “Allow third-party extension imports” in Settings → Addons → External Extensions.",
     "gate.unknown": "Could not read the gate state ({error}).",
+    "catalog.heading": "FigCake extensions",
+    "catalog.help": "Installs several of FigCake's extensions at once, one after another, from their GitHub repositories. Each goes into Marinara switched off, as a single install does; an installed one is updated (switched back on at once if it was on and “Keep updated extensions on” is set), one with the same code is only linked.",
+    "catalog.installedElsewhere": "same name {version}, installed another way",
+    "catalog.willOff": "Updating switches it off until you approve it again in Marinara (unless “Keep updated extensions on” is set).",
+    "catalog.staysOn": "Updating keeps it on (“Keep updated extensions on” is set).",
+    "catalog.skipped.newer": "{name}: left as it is — the installed version is newer than what its repository publishes. Install {input} from the address box above to see what would change.",
+    "catalog.skipped.current": "{name}: already up to date.",
+    "catalog.stopped": "{name}: not tried — it would fail for the same reason as the one before.",
+    "catalog.reload": "Marinara's own list (Settings → Addons) shows the change after you reload the page.",
+    "catalog.installed": "installed {version}",
+    "catalog.missing": "not installed",
+    "catalog.install": "Install the chosen ({count})",
+    "catalog.progress": "Installing {name} ({done}/{total})…",
+    "catalog.done": "Done: {ok} of {total}.",
+    "catalog.skipped.runtime": "{name}: left as it is — the installed one runs elsewhere (client/server), so it can't be replaced here.",
+    "catalog.skipped.edited": "{name}: left as it is — its code was changed in Marinara's editor. Install {input} from the address box above to see what would change.",
+    "catalog.skipped.other": "{name}: left as it is — Marinara has an extension of this name that Fetchy didn't install from FigCake's repository (by hand, or from elsewhere). Install {input} from the address box above to see what would change.",
+    "catalog.failed": "{name}: {error}",
+    "catalog.fullPage": "All of these ask for full page access: each can read and change everything on the Marinara page, API keys and chats included. Install them only if you trust the author.",
+    "catalog.unknown": "unknown",
     "install.heading": "Install",
     "install.placeholder": "GitHub address (e.g. FigCake/ME.Fetchy)",
     "install.fetch": "Check",
@@ -1664,7 +1684,7 @@
     "option.keepEnabled": "Keep updated extensions on",
     "help.keepEnabled": "Whenever an extension that was on gets updated, here or with Update all, approve the new code and switch it back on right away, without reading it. Not applied when the new version asks for new capabilities.",
     "keep.confirm.title": "Keep updated extensions on?",
-    "keep.confirm.body": "Fetchy will approve updated code and switch extensions back on without you reading it, for every update made here. Code published by those repositories will then run in your Marinara as soon as you press Update. Versions that ask for new capabilities are never approved this way.",
+    "keep.confirm.body": "Fetchy will approve updated code and switch extensions back on without you reading it, for every update made here. Code published by those repositories will then run in your Marinara as soon as you press Update (or install the chosen FigCake extensions). Versions that ask for new capabilities are never approved this way.",
     "result.updatedAll": "Updated {ok} of {total}.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": 'Nothing to update. Press "Check all" first.',
@@ -1842,6 +1862,26 @@
     "gate.env": "외부 확장이 잠겨 있습니다. 서버 .env에 ENABLE_EXTERNAL_EXTENSIONS=true 를 넣고 Marinara를 다시 시작하세요.",
     "gate.switch": "외부 확장이 잠겨 있습니다. 설정 → 애드온 → 외부 확장에서 “Allow third-party extension imports”를 켜세요.",
     "gate.unknown": "게이트 상태를 읽을 수 없습니다 ({error}).",
+    "catalog.heading": "FigCake 확장",
+    "catalog.help": "FigCake의 확장 여러 개를 GitHub 저장소에서 한 번에, 하나씩 차례로 설치합니다. 하나씩 설치할 때처럼 Marinara에 꺼진 상태로 들어가고, 이미 있는 것은 업데이트(켜져 있었고 “업데이트한 확장 켜 두기”가 켜져 있으면 바로 다시 켜짐), 코드가 같은 것은 연결만 합니다.",
+    "catalog.installedElsewhere": "같은 이름 {version}, 다른 방법으로 설치됨",
+    "catalog.willOff": "업데이트하면 Marinara에서 다시 승인할 때까지 꺼집니다(“업데이트한 확장 켜 두기”가 켜져 있으면 그대로 켜짐).",
+    "catalog.staysOn": "업데이트해도 켜진 채로 둡니다(“업데이트한 확장 켜 두기”가 켜져 있음).",
+    "catalog.skipped.newer": "{name}: 그대로 둠 — 설치된 버전이 저장소에 올라온 것보다 새것입니다. 위 주소 칸에서 {input}을(를) 설치하면 무엇이 바뀌는지 먼저 볼 수 있습니다.",
+    "catalog.skipped.current": "{name}: 이미 최신입니다.",
+    "catalog.stopped": "{name}: 시도하지 않음 — 앞의 것과 같은 이유로 실패할 것이라 건너뛰었습니다.",
+    "catalog.reload": "Marinara 자체 목록(설정 → 애드온)에는 페이지를 새로 고친 뒤에 바뀐 것이 보입니다.",
+    "catalog.installed": "설치됨 {version}",
+    "catalog.missing": "설치 안 됨",
+    "catalog.install": "고른 것 설치 ({count})",
+    "catalog.progress": "{name} 설치 중 ({done}/{total})…",
+    "catalog.done": "끝: {total}개 중 {ok}개.",
+    "catalog.skipped.runtime": "{name}: 그대로 둠 — 설치된 것이 다른 곳(클라이언트/서버)에서 돌아가서 여기서 바꿀 수 없습니다.",
+    "catalog.skipped.edited": "{name}: 그대로 둠 — Marinara 편집기에서 코드를 고쳤습니다. 위 주소 칸에서 {input}을(를) 설치하면 무엇이 바뀌는지 먼저 볼 수 있습니다.",
+    "catalog.skipped.other": "{name}: 그대로 둠 — Fetchy가 FigCake 저장소에서 설치하지 않은 같은 이름의 확장이 있습니다(손으로 설치했거나 다른 곳에서). 위 주소 칸에서 {input}을(를) 설치하면 무엇이 바뀌는지 먼저 볼 수 있습니다.",
+    "catalog.failed": "{name}: {error}",
+    "catalog.fullPage": "모두 전체 페이지 접근 권한을 씁니다: 각각 Marinara 페이지의 모든 것(API 키, 채팅 포함)을 읽고 바꿀 수 있습니다. 제작자를 믿을 때만 설치하세요.",
+    "catalog.unknown": "알 수 없음",
     "install.heading": "설치",
     "install.placeholder": "GitHub 주소 (예: FigCake/ME.Fetchy)",
     "install.fetch": "확인",
@@ -1882,7 +1922,7 @@
     "option.keepEnabled": "업데이트한 확장 켜 두기",
     "help.keepEnabled": "켜져 있던 확장을 업데이트하면(개별이든 “모두 업데이트”든) 새 코드를 읽지 않고 승인해 바로 다시 켭니다. 새 권한을 요구하는 버전에는 적용하지 않습니다.",
     "keep.confirm.title": "업데이트한 확장을 켜 둘까요?",
-    "keep.confirm.body": "여기서 하는 모든 업데이트에서 Fetchy가 업데이트된 코드를 읽어 보지 않고 승인해 다시 켭니다. 즉 그 저장소들에 올라온 코드가 업데이트를 누르는 순간 내 Marinara에서 실행됩니다. 새 권한을 요구하는 버전은 이 방식으로 승인하지 않습니다.",
+    "keep.confirm.body": "여기서 하는 모든 업데이트에서 Fetchy가 업데이트된 코드를 읽어 보지 않고 승인해 다시 켭니다. 즉 그 저장소들에 올라온 코드가 업데이트(또는 고른 FigCake 확장 설치)를 누르는 순간 내 Marinara에서 실행됩니다. 새 권한을 요구하는 버전은 이 방식으로 승인하지 않습니다.",
     "result.updatedAll": "{total}개 중 {ok}개 업데이트했습니다.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": "업데이트할 것이 없습니다. 먼저 “모두 확인”을 누르세요.",
@@ -2067,6 +2107,67 @@
     };
   }
 
+  // src/catalog.ts
+  var CATALOG = [
+    { name: "Dispensa", input: "FigCake/ME.Dispensa", about: { en: "Quick Replies (STscript), the Dock, the visualizer and a memo pad", ko: "퀵 리플라이(STscript)·독·비주얼라이저·메모장" } },
+    { name: "Fornello", input: "FigCake/ME.Fornello", about: { en: "Runs HTML pages, components and scripts in chat messages", ko: "채팅 속 HTML 페이지·컴포넌트·스크립트 실행" } },
+    { name: "Polyglot", input: "FigCake/ME.Polyglot", about: { en: "Language study in your chats: tap translation, a wordbook with reviews, dialogue voice", ko: "채팅으로 언어 공부: 눌러서 번역·단어장과 복습·대사 음성" } }
+  ];
+  function catalogMode(p) {
+    if (p.engineListError) throw p.engineListError;
+    const record = p.engine?.record;
+    if (!record) return { kind: "create" };
+    if (p.engine?.runtimeDiffers) return { skip: "runtime" };
+    const ours = p.tracked !== null && p.tracked.extensionId === record.id && sameRepo(p.tracked.source, p);
+    if (p.engine?.sameCode) return ours && p.tracked?.installedHash === p.contentHash ? { skip: "current" } : { kind: "link", extensionId: record.id };
+    if (p.engine?.editedInMarinara) return { skip: "edited" };
+    if (!ours) return { skip: "other" };
+    if (compareVersions(p.draft.version, record.version) === -1) return { skip: "newer" };
+    return { kind: "update", extensionId: record.id };
+  }
+  function catalogRepo(entry) {
+    const source = parseSourceUrl(entry.input);
+    return source.kind === "github-repo" ? { owner: source.owner, repo: source.repo } : { owner: "", repo: "" };
+  }
+  function isCatalogSource(entry, source) {
+    const { owner, repo } = catalogRepo(entry);
+    return source.kind === "github-repo" && source.owner.toLowerCase() === owner.toLowerCase() && source.repo.toLowerCase() === repo.toLowerCase();
+  }
+  function sameRepo(tracked, p) {
+    const now = p.source;
+    if (tracked.kind !== "github-repo" || now.kind !== "github-repo") return false;
+    const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+    return same(tracked.owner, now.owner) && same(tracked.repo, now.repo) && tracked.path === now.path && (tracked.ref === now.ref || now.ref === null && tracked.ref === p.pkg.ref);
+  }
+  function stopsAll(error) {
+    if (error instanceof EngineApiError) return ["gates-closed", "privileged", "untrusted-host", "csrf", "network"].includes(error.code);
+    return error instanceof FetchError && (error.code === "network" || error.code === "timeout" || error.code === "rate-limited");
+  }
+  async function installCatalog(entries2, deps, onProgress) {
+    const out = [];
+    let stopped = false;
+    for (const [i, entry] of entries2.entries()) {
+      if (stopped) {
+        out.push({ entry, status: "stopped" });
+        continue;
+      }
+      onProgress?.(i, entries2.length, entry);
+      try {
+        const prepared = await prepare(entry.input, deps, { freshest: true, readme: false });
+        const mode = catalogMode(prepared);
+        if ("skip" in mode) out.push({ entry, status: "skipped", reason: mode.skip });
+        else out.push({ entry, status: "done", result: await install(keepAddress(prepared, mode), deps, mode) });
+      } catch (error) {
+        out.push({ entry, status: "failed", error });
+        stopped = stopsAll(error);
+      }
+    }
+    return out;
+  }
+  function keepAddress(p, mode) {
+    return mode.kind !== "create" && p.tracked && sameRepo(p.tracked.source, p) ? { ...p, input: p.tracked.input, source: p.tracked.source } : p;
+  }
+
   // src/ui.ts
   var HOST_ELEMENT_ID = "me-fetchy";
   var STYLE = `
@@ -2131,6 +2232,7 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, C
 .msg.ok { background: var(--wash-ok); }
 .msg.err { background: var(--wash-bad); }
 .msg.warn { background: var(--wash-warn); }
+.msg.info { background: var(--soft); }
 .msg.loud { background: var(--wash-bad); font-weight: 600; }
 .gate { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .gate.bad { color: var(--fg); }
@@ -2142,7 +2244,9 @@ details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); }
 details.fold details.fold { margin-top: 12px; }
 pre { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--soft); padding: 10px 12px; border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
 ul.files, ul.changes, ul.revisions { margin: 4px 0 0; padding-left: 18px; }
-ul.items { list-style: none; margin: 0; padding: 0; }
+ul.items, ul.catalog-list { list-style: none; margin: 0; padding: 0; }
+ul.catalog-list > li { padding: 8px 0; border-top: 1px solid var(--line); }
+ul.catalog-list > li:first-child { border-top: 0; }
 ul.items > li { padding: 12px 0; border-top: 1px solid var(--line); }
 ul.items > li:first-child { border-top: 0; }
 .name { font-weight: 600; font-size: 14px; }
@@ -2157,7 +2261,7 @@ label.toggle input { accent-color: var(--accent); }
 summary.row { list-style: none; } summary.row::-webkit-details-marker { display: none; }
 ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; color: var(--muted); }
 ul.log .refused, ul.log .failed { color: var(--fg); }
-.preview, .items, .install { margin-top: 4px; }
+.preview, .items, .install, .catalog { margin-top: 4px; }
 footer { margin-top: 20px; }
 `;
   function el(tag, attrs = {}, ...children) {
@@ -2216,6 +2320,10 @@ footer { margin-top: 20px; }
     let keepEnabled = false;
     let keepFor = null;
     let installMessage = null;
+    const catalogPicked = /* @__PURE__ */ new Set();
+    let catalogMessage = null;
+    let catalogResults = [];
+    let catalogRunning = false;
     let sourcesMessage = null;
     let urlInput = "";
     let transfer = null;
@@ -2242,6 +2350,10 @@ footer { margin-top: 20px; }
         e.preventDefault();
         close();
       }
+    });
+    let focusKey = null;
+    panel.addEventListener("focusin", (e) => {
+      focusKey = e.target.dataset?.focus ?? null;
     });
     wrapper.append(launcher, backdrop);
     root.append(wrapper);
@@ -2363,6 +2475,32 @@ footer { margin-top: 20px; }
           installMessage = { kind: "err", text: describeError(e, t, { name }) };
         }
       }
+    });
+    const onCatalogInstall = () => guard(async () => {
+      const chosen = CATALOG.filter((e) => catalogPicked.has(e.name));
+      if (!chosen.length) return;
+      catalogResults = [];
+      catalogRunning = true;
+      let outcomes;
+      try {
+        outcomes = await installCatalog(chosen, { ...deps, approveNow: keepEnabled }, (done, total, entry) => {
+          catalogMessage = { kind: "info", text: t("catalog.progress", { name: entry.name, done: done + 1, total }) };
+          render();
+        });
+      } finally {
+        catalogRunning = false;
+      }
+      catalogResults = outcomes.map((o) => o.status === "done" ? resultMessage(o.result) : o.status === "skipped" ? { kind: o.reason === "current" ? "ok" : "warn", text: t(`catalog.skipped.${o.reason}`, { name: o.entry.name, input: o.entry.input }) } : o.status === "stopped" ? { kind: "warn", text: t("catalog.stopped", { name: o.entry.name }) } : { kind: "err", text: t("catalog.failed", { name: o.entry.name, error: describeError(o.error, t, { name: o.entry.name }) }) });
+      const ok = outcomes.filter((o) => o.status === "done" || o.status === "skipped" && o.reason === "current").length;
+      catalogMessage = { kind: ok === outcomes.length ? "ok" : "warn", text: t("catalog.done", { ok, total: outcomes.length }) };
+      if (outcomes.some((o) => o.status === "done" && o.result.codeChanged)) catalogResults.push({ kind: "info", text: t("catalog.reload") });
+      catalogPicked.clear();
+      for (const o of outcomes) if (o.status === "failed" || o.status === "stopped") catalogPicked.add(o.entry.name);
+      if (prepared && chosen.some((e) => e.name.toLowerCase() === prepared?.draft.name.trim().toLowerCase())) {
+        prepared = null;
+        pendingExistingId = null;
+      }
+      await afterChange();
     });
     const onCheckAll = () => guard(async () => {
       sourcesMessage = null;
@@ -2768,6 +2906,7 @@ footer { margin-top: 20px; }
           more.push(el("label", { class: "toggle" }, el("input", {
             type: "checkbox",
             class: "auto-approve",
+            "data-focus": `auto:${record.id}`,
             checked: record.autoApprove === true,
             disabled: busy,
             onChange: (e) => {
@@ -2829,6 +2968,57 @@ footer { margin-top: 20px; }
         extension ? codeBlock(extension) : null
       );
     }
+    function catalogSection() {
+      return el(
+        "section",
+        { class: "catalog" },
+        el("h3", {}, t("catalog.heading"), help(t("catalog.help"))),
+        el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => {
+          const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: busy, onChange: (e) => {
+            if (e.target.checked) catalogPicked.add(entry.name);
+            else catalogPicked.delete(entry.name);
+            render();
+          } });
+          box.checked = catalogPicked.has(entry.name);
+          const found = catalogRow(entry);
+          const ext = found?.row.extension ?? null;
+          const willOff = catalogPicked.has(entry.name) && found?.ours && ext?.enabled ? el("div", { class: "line note" }, t(keepEnabled ? "catalog.staysOn" : "catalog.willOff")) : null;
+          return el(
+            "li",
+            {},
+            el("label", { class: "toggle" }, box, el("span", { class: "name" }, entry.name)),
+            " ",
+            catalogBadge(found),
+            el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
+            willOff
+          );
+        })),
+        el("div", { class: "msg loud" }, t("catalog.fullPage")),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "primary", type: "button", disabled: busy || !catalogPicked.size, onClick: () => void onCatalogInstall() }, t("catalog.install", { count: catalogPicked.size }))
+        ),
+        message(catalogMessage),
+        ...catalogResults.map((m) => message(m))
+      );
+    }
+    function catalogRow(entry) {
+      if (rows === null) return void 0;
+      const tracked = rows.find((r) => r.extension && r.record && isCatalogSource(entry, r.record.source));
+      if (tracked) return { row: tracked, ours: true };
+      const named = rows.find((r) => r.extension && r.extension.name.trim().toLowerCase() === entry.name.toLowerCase());
+      return named ? { row: named, ours: false } : null;
+    }
+    function catalogBadge(found) {
+      if (found === void 0) return el("span", { class: "badge" }, t("catalog.unknown"));
+      const ext = found?.row.extension;
+      if (!found || !ext) return el("span", { class: "badge off" }, t("catalog.missing"));
+      const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
+      const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
+      const version = ext.version ?? "";
+      return el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`);
+    }
     function itemsSection() {
       const list = rows ?? records.map((record) => ({ extension: null, record }));
       const sorted = [...list].sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
@@ -2847,6 +3037,7 @@ footer { margin-top: 20px; }
             el("label", { class: "toggle" }, el("input", {
               type: "checkbox",
               class: "keep-enabled",
+              "data-focus": "keep-enabled",
               checked: keepEnabled,
               disabled: busy,
               onChange: (e) => {
@@ -2891,8 +3082,8 @@ footer { margin-top: 20px; }
           el(
             "div",
             { class: "actions" },
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating"), help(t("help.floating"))),
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "floating", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating"), help(t("help.floating"))),
             el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
               transfer = { kind: "export", text: exportSources(records) };
               render();
@@ -2987,6 +3178,11 @@ footer { margin-top: 20px; }
       );
     }
     function render() {
+      const key = focusKey;
+      renderPanel();
+      if (key) [...panel.querySelectorAll("[data-focus]")].find((x) => x.dataset.focus === key)?.focus();
+    }
+    function renderPanel() {
       backdrop.hidden = !isOpen;
       launcher.setAttribute("aria-expanded", String(isOpen));
       panel.replaceChildren(fragment(
@@ -3042,11 +3238,12 @@ footer { margin-top: 20px; }
                 urlInput = e.target.value;
               }
             }),
-            el("button", { class: "primary", type: "submit", disabled: busy }, busy && !prepared ? t("install.fetching") : t("install.fetch"))
+            el("button", { class: "primary", type: "submit", disabled: busy }, busy && !prepared && !catalogRunning ? t("install.fetching") : t("install.fetch"))
           ),
           message(installMessage)
         ),
         prepared ? previewSection(prepared) : null,
+        catalogSection(),
         itemsSection()
       ));
     }
@@ -3062,6 +3259,8 @@ footer { margin-top: 20px; }
     function close() {
       isOpen = false;
       reconcileMessage = null;
+      catalogMessage = null;
+      catalogResults = [];
       render();
       if (floating) launcher.focus();
     }
@@ -3104,7 +3303,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.7.3" : "0.0.0";
+  var VERSION = true ? "0.8.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
