@@ -1,4 +1,4 @@
-/*! Fetchy 0.8.0 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.8.1 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: MIT */
@@ -335,7 +335,8 @@
       lastCheckedAt: str(value.lastCheckedAt),
       latest: parseLatest(value.latest),
       lastError: str(value.lastError),
-      autoApprove: value.autoApprove === true
+      autoApprove: value.autoApprove === true,
+      autoUpdate: value.autoUpdate === true
     };
   }
   function newRecordId() {
@@ -640,7 +641,7 @@
     const dirOffset = view.getUint32(eocd + 16, true);
     if (count > MAX_ENTRIES) fail("too many entries");
     if (dirOffset + dirSize > bytes.byteLength) fail("central directory out of range");
-    const names = new TextDecoder();
+    const names2 = new TextDecoder();
     const entries2 = /* @__PURE__ */ new Map();
     let p = dirOffset;
     for (let i = 0; i < count; i++) {
@@ -654,7 +655,7 @@
       const commentLen = view.getUint16(p + 32, true);
       const offset = view.getUint32(p + 42, true);
       if (p + 46 + nameLen > bytes.byteLength) fail("bad central directory");
-      const name = names.decode(bytes.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/").replace(/^\/+/, "");
+      const name = names2.decode(bytes.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/").replace(/^\/+/, "");
       if (offset + 30 + compressed > bytes.byteLength) fail(`${name} lies past the end of the file`);
       if (name && !name.endsWith("/")) {
         if (entries2.has(name)) fail(`duplicate entry ${name}`);
@@ -1293,7 +1294,8 @@
       lastCheckedAt: iso,
       latest: { version: prepared.draft.version, hash: prepared.contentHash, state, checkedAt: iso },
       lastError: null,
-      autoApprove: previous?.autoApprove === true
+      autoApprove: previous?.autoApprove === true,
+      autoUpdate: previous?.autoUpdate === true
     };
   }
   async function verifyAnswer(prepared, extension, codeChanged) {
@@ -1385,7 +1387,7 @@
     const extension = await deps.client.update(current.id, prepared.draft);
     await verifyAnswer(prepared, extension, true);
     const approval = await autoApprove(previous, current, extension, prepared.draft, deps);
-    const record = { ...recordFrom(prepared, extension, previous, now, extension.contentHash), autoApprove: previous?.autoApprove === true };
+    const record = { ...recordFrom(prepared, extension, previous, now, extension.contentHash), autoApprove: previous?.autoApprove === true, autoUpdate: previous?.autoUpdate === true };
     await deps.store.upsert(record);
     return { record, extension, mode, codeChanged: true, self: false, ...approval };
   }
@@ -1583,6 +1585,31 @@
     await store.save([...byExtension.values()]);
     return { imported: incoming.length, ignored: list.length - incoming.length };
   }
+  async function setAutoUpdate(record, value, deps) {
+    const updated = { ...record, autoUpdate: value };
+    await deps.store.upsert(updated);
+    await log(deps, { action: "check", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "automatic updates switched on by the user" : "automatic updates switched off" });
+    return updated;
+  }
+  var hasUpdate = (r) => !!r.latest && (r.latest.state === "update" || r.latest.state === "changed");
+  async function autoUpdate(deps, options) {
+    const out = [];
+    for (const first of await deps.store.load()) {
+      if (!first.autoUpdate || first.extensionId === deps.selfId) continue;
+      let record = first;
+      if (options.check) {
+        record = await checkSource(first, deps);
+        await deps.store.upsert(record);
+      }
+      if (!hasUpdate(record)) continue;
+      try {
+        out.push({ record, result: await updateSource(record, deps) });
+      } catch (e) {
+        out.push({ record, result: e instanceof Error ? e : new Error(String(e)) });
+      }
+    }
+    return out;
+  }
 
   // src/errors.ts
   function describeError(error, t, context = {}) {
@@ -1625,6 +1652,22 @@
     "gate.switch": "External Extensions are locked. Turn on “Allow third-party extension imports” in Settings → Addons → External Extensions.",
     "gate.unknown": "Could not read the gate state ({error}).",
     "catalog.heading": "FigCake extensions",
+    "bundle.button": "Bundle install",
+    "bundle.title": "FigCake extensions",
+    "bundle.hasUpdate": "Updates for FigCake extensions",
+    "catalog.update": "update {version}",
+    "organize.heading": "Folders and tags",
+    "organize.folders": "Folders",
+    "organize.tags": "Tags",
+    "organize.add": "Add",
+    "organize.newFolder": "New folder",
+    "organize.newTag": "New tag",
+    "organize.delete": "Delete",
+    "organize.noFolder": "No folder",
+    "organize.allTags": "All",
+    "organize.folder": "Folder",
+    "organize.empty": "None yet",
+    "preview.details": "Files and sizes",
     "catalog.help": "Installs several of FigCake's extensions at once, one after another, from their GitHub repositories. Each goes into Marinara switched off, as a single install does; an installed one is updated (switched back on at once if it was on and “Keep updated extensions on” is set), one with the same code is only linked.",
     "catalog.installedElsewhere": "same name {version}, installed another way",
     "catalog.willOff": "Updating switches it off until you approve it again in Marinara (unless “Keep updated extensions on” is set).",
@@ -1798,7 +1841,6 @@
     "error.import.invalid": "That is not an exported source list.",
     "anchor.button": "Install from GitHub",
     "anchor.hint": "Shortcut: Alt+Shift+F",
-    "option.floating": "Floating button",
     "warn.capabilitiesAdded": "MORE AUTHORITY REQUESTED: this version asks for {values}, which the installed extension does not have. Marinara will require a fresh approval of the new hash; read the code before you approve.",
     "warn.capabilitiesRemoved": "This version drops the capabilities {values}.",
     "warn.sameVersionChanged": "The source changed its code without changing the version ({version}). Treat it like a new release: review the changes before updating.",
@@ -1830,8 +1872,11 @@
     "prefs.heading": "Options",
     "help.install": "A GitHub repository (FigCake/ME.Fetchy, or a /tree/branch/folder link), a manifest.json address, or a zip address. Fetchy downloads the files, shows what they are, and stores them in Marinara switched off. You switch them on under Settings → Addons → External Extensions (Review and Run).",
     "help.items": "Every External Extension in Marinara. Ones installed through Fetchy can be checked for updates; others can be linked to the GitHub address they came from. An update always switches the extension off until you approve the new code.",
-    "help.autoCheck": "Only checks for updates when this panel opens. Never installs anything by itself.",
-    "help.floating": "Also shows a Fetchy button at the bottom right of every page.",
+    "help.autoCheck": "Checks every extension for updates when this panel opens. It installs only those you switched automatic updates on for.",
+    "autoUpdate.label": "Update automatically",
+    "autoUpdate.badge": "auto update",
+    "help.autoUpdate": "Fetchy installs this extension's updates by itself: when Marinara opens (at most every 6 hours) and after a check. Marinara keeps the new code switched off until you approve it, unless auto re-approval or “Keep updated extensions on” is set.",
+    "autoUpdate.done": "Automatic updates: {ok} of {total}.",
     "help.autoApprove": "After an update, approve the new code and switch the extension back on without reading it. Not applied when the new version asks for new capabilities, or if the extension was off.",
     "help.log": "What Fetchy did, with versions and hashes before and after.",
     "help.transfer": "The list of sources as text, to move to another browser or Marinara.",
@@ -1863,6 +1908,22 @@
     "gate.switch": "외부 확장이 잠겨 있습니다. 설정 → 애드온 → 외부 확장에서 “Allow third-party extension imports”를 켜세요.",
     "gate.unknown": "게이트 상태를 읽을 수 없습니다 ({error}).",
     "catalog.heading": "FigCake 확장",
+    "bundle.button": "묶음 설치",
+    "bundle.title": "FigCake 확장",
+    "bundle.hasUpdate": "FigCake 확장 업데이트 있음",
+    "catalog.update": "업데이트 {version}",
+    "organize.heading": "폴더와 태그",
+    "organize.folders": "폴더",
+    "organize.tags": "태그",
+    "organize.add": "추가",
+    "organize.newFolder": "새 폴더",
+    "organize.newTag": "새 태그",
+    "organize.delete": "지우기",
+    "organize.noFolder": "폴더 없음",
+    "organize.allTags": "전체",
+    "organize.folder": "폴더",
+    "organize.empty": "아직 없음",
+    "preview.details": "파일·크기",
     "catalog.help": "FigCake의 확장 여러 개를 GitHub 저장소에서 한 번에, 하나씩 차례로 설치합니다. 하나씩 설치할 때처럼 Marinara에 꺼진 상태로 들어가고, 이미 있는 것은 업데이트(켜져 있었고 “업데이트한 확장 켜 두기”가 켜져 있으면 바로 다시 켜짐), 코드가 같은 것은 연결만 합니다.",
     "catalog.installedElsewhere": "같은 이름 {version}, 다른 방법으로 설치됨",
     "catalog.willOff": "업데이트하면 Marinara에서 다시 승인할 때까지 꺼집니다(“업데이트한 확장 켜 두기”가 켜져 있으면 그대로 켜짐).",
@@ -2036,7 +2097,6 @@
     "error.import.invalid": "내보낸 소스 목록이 아닙니다.",
     "anchor.button": "GitHub에서 설치",
     "anchor.hint": "단축키: Alt+Shift+F",
-    "option.floating": "플로팅 버튼",
     "warn.capabilitiesAdded": "권한 추가 요청: 이 버전은 설치된 확장에 없는 {values} 권한을 요구합니다. Marinara가 새 해시의 승인을 다시 요구하며, 승인 전에 코드를 읽어 보세요.",
     "warn.capabilitiesRemoved": "이 버전은 {values} 권한을 더 쓰지 않습니다.",
     "warn.sameVersionChanged": "소스가 버전({version})은 그대로 둔 채 코드만 바꿨습니다. 새 릴리스처럼 다루고, 업데이트 전에 변경 사항을 확인하세요.",
@@ -2068,8 +2128,11 @@
     "prefs.heading": "옵션",
     "help.install": "GitHub 저장소(FigCake/ME.Fetchy 처럼, 또는 /tree/브랜치/폴더 링크), manifest.json 주소, zip 주소. Fetchy가 파일을 받아 내용을 보여 주고 Marinara에 꺼진 상태로 넣습니다. 켜는 것은 설정 → 애드온 → 외부 확장(Review and Run)에서 합니다.",
     "help.items": "Marinara의 외부 확장 전부입니다. Fetchy로 설치한 것은 업데이트를 확인할 수 있고, 아닌 것은 받아온 GitHub 주소를 연결하면 됩니다. 업데이트하면 새 코드를 승인할 때까지 확장이 꺼집니다.",
-    "help.autoCheck": "이 패널을 열 때 업데이트가 있는지만 봅니다. 혼자 설치하지는 않습니다.",
-    "help.floating": "모든 페이지 오른쪽 아래에도 Fetchy 버튼을 둡니다.",
+    "help.autoCheck": "이 패널을 열 때 모든 확장의 업데이트를 확인합니다. 설치는 자동 업데이트를 켠 확장만 합니다.",
+    "autoUpdate.label": "자동 업데이트",
+    "autoUpdate.badge": "자동 업데이트",
+    "help.autoUpdate": "Fetchy가 이 확장의 업데이트를 알아서 설치합니다: 마리나라를 열 때(최대 6시간에 한 번)와 업데이트 확인 뒤. 새 코드는 마리나라가 승인할 때까지 꺼 둡니다(자동 승인이나 “업데이트한 확장 켜 두기”가 켜져 있으면 다시 켜짐).",
+    "autoUpdate.done": "자동 업데이트: {total}개 중 {ok}개.",
     "help.autoApprove": "업데이트 뒤 새 코드를 읽지 않고 승인해 다시 켭니다. 새 권한을 요구하는 버전이나 꺼져 있던 확장에는 적용하지 않습니다.",
     "help.log": "Fetchy가 한 일을 버전·해시 전후와 함께 기록합니다.",
     "help.transfer": "소스 목록을 글로 뽑아 다른 브라우저나 Marinara로 옮깁니다.",
@@ -2168,6 +2231,62 @@
     return mode.kind !== "create" && p.tracked && sameRepo(p.tracked.source, p) ? { ...p, input: p.tracked.input, source: p.tracked.source } : p;
   }
 
+  // src/organize.ts
+  var emptyOrganize = () => ({ folders: [], tags: [], of: {} });
+  var NAME_MAX = 40;
+  function names(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const x of raw) {
+      if (!x || typeof x.id !== "string" || !x.id || out.some((y) => y.id === x.id)) continue;
+      const name = typeof x.name === "string" ? x.name.trim().slice(0, NAME_MAX) : "";
+      if (name) out.push({ id: x.id, name });
+    }
+    return out;
+  }
+  function normalizeOrganize(raw) {
+    const r = raw && typeof raw === "object" ? raw : {};
+    const folders = names(r.folders);
+    const tags = names(r.tags);
+    const folderIds = new Set(folders.map((f) => f.id));
+    const tagIds = new Set(tags.map((t) => t.id));
+    const of = {};
+    for (const [key, v] of Object.entries(r.of && typeof r.of === "object" ? r.of : {})) {
+      if (!v || typeof v !== "object" || key === "__proto__") continue;
+      const folder = typeof v.folder === "string" && folderIds.has(v.folder) ? v.folder : void 0;
+      const list = Array.isArray(v.tags) ? [...new Set(v.tags.filter((t) => typeof t === "string" && tagIds.has(t)))] : [];
+      if (folder || list.length) of[key] = { ...folder ? { folder } : {}, ...list.length ? { tags: list } : {} };
+    }
+    return { folders, tags, of };
+  }
+  var counter = 0;
+  var newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
+  function addFolder(o, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    return clean ? { ...o, folders: [...o.folders, { id: newId("f"), name: clean }] } : o;
+  }
+  function addTag(o, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    if (!clean || o.tags.some((t) => t.name.toLowerCase() === clean.toLowerCase())) return o;
+    return { ...o, tags: [...o.tags, { id: newId("t"), name: clean }] };
+  }
+  function rename(o, kind, id, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    if (!clean) return o;
+    return { ...o, [kind]: o[kind].map((x) => x.id === id ? { ...x, name: clean } : x) };
+  }
+  function remove(o, kind, id) {
+    return normalizeOrganize({ ...o, [kind]: o[kind].filter((x) => x.id !== id) });
+  }
+  function setFolder(o, key, folder) {
+    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], folder: folder ?? void 0 } } });
+  }
+  function toggleTag(o, key, tag) {
+    const now = o.of[key]?.tags ?? [];
+    const tags = now.includes(tag) ? now.filter((t) => t !== tag) : [...now, tag];
+    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], tags } } });
+  }
+
   // src/ui.ts
   var HOST_ELEMENT_ID = "me-fetchy";
   var STYLE = `
@@ -2185,13 +2304,6 @@
   font-family: inherit; font-size: 13px; line-height: 1.55; color: var(--fg);
   word-break: keep-all; overflow-wrap: break-word; letter-spacing: normal; text-align: left; white-space: normal;
 }
-.launcher {
-  position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
-  font: 600 13px/1 inherit; font-family: inherit; color: var(--accent-fg); background: var(--accent); border: 0; border-radius: 999px; padding: 10px 14px;
-  box-shadow: 0 2px 10px rgba(0,0,0,.25); cursor: pointer; white-space: nowrap;
-}
-.launcher:hover, .launcher:focus { opacity: .9; outline: none; }
-.launcher[hidden] { display: none; }
 .backdrop { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 2147483001; background: rgba(0,0,0,.45); overflow: auto; padding: 24px 12px; }
 .backdrop[hidden] { display: none; }
 .panel {
@@ -2262,6 +2374,26 @@ summary.row { list-style: none; } summary.row::-webkit-details-marker { display:
 ul.log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; } ul.log li { border-top: 1px solid var(--line); padding: 4px 0; color: var(--muted); }
 ul.log .refused, ul.log .failed { color: var(--fg); }
 .preview, .items, .install, .catalog { margin-top: 4px; }
+/* the bundle button: the cake is grey until an update for one of FigCake's extensions is found */
+header .tools button.bundle .cake { filter: grayscale(1); opacity: .75; }
+header .tools button.bundle.has-update { color: var(--fg); background: var(--wash-warn); }
+header .tools button.bundle.has-update .cake { filter: none; opacity: 1; }
+header .tools button.bundle .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; vertical-align: middle; }
+.pop-back { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 2147483002; background: rgba(0,0,0,.35); display: flex; justify-content: center; align-items: flex-start; padding: 56px 12px; overflow: auto; }
+.pop { width: 100%; max-width: 540px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 16px; }
+.pop .pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pop .pop-head h3 { margin: 0; }
+@media (max-width: 640px) { .pop-back { padding: 0; } .pop { max-width: none; min-height: 100%; border-radius: 0; border: 0; } }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.chip { font-size: 11px; line-height: 1.5; padding: 1px 9px; border-radius: 999px; background: var(--soft); color: var(--muted); border: 1px solid transparent; }
+button.chip.on { color: var(--fg); border-color: var(--accent); }
+span.chip { margin-right: 4px; }
+details.folder > summary { font-weight: 600; color: var(--fg); padding: 6px 0; }
+details.folder > summary .muted { font-weight: 400; margin-left: 6px; }
+.org-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+.org-list li { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.org-list li input { flex: 1 1 auto; }
+select { font: inherit; font-size: 12px; color: var(--fg); background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
 footer { margin-top: 20px; }
 `;
   function el(tag, attrs = {}, ...children) {
@@ -2327,8 +2459,11 @@ footer { margin-top: 20px; }
     let sourcesMessage = null;
     let urlInput = "";
     let transfer = null;
-    let autoCheck = false;
-    let floating = false;
+    let autoCheck = true;
+    let autoUpdatedAt = 0;
+    let organize = emptyOrganize();
+    let tagFilter = null;
+    let bundleOpen = false;
     const folds = /* @__PURE__ */ new Set();
     let logEntries = [];
     let reconcileMessage = null;
@@ -2340,22 +2475,23 @@ footer { margin-top: 20px; }
     const root = hostElement.attachShadow({ mode: "open" });
     const wrapper = el("div", { class: "root" });
     wrapper.append(el("style", {}, STYLE));
-    const launcher = el("button", { class: "launcher", type: "button", hidden: true, "aria-haspopup": "dialog", "aria-expanded": "false", title: t("launcher.title"), onClick: () => toggle() }, t("launcher"));
     const panel = el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": t("title"), tabindex: "-1" });
     const backdrop = el("div", { class: "backdrop", hidden: true, onClick: (e) => {
       if (e.target === backdrop) close();
     } }, panel);
     panel.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
-      }
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (bundleOpen) {
+        bundleOpen = false;
+        render();
+      } else close();
     });
     let focusKey = null;
     panel.addEventListener("focusin", (e) => {
       focusKey = e.target.dataset?.focus ?? null;
     });
-    wrapper.append(launcher, backdrop);
+    wrapper.append(backdrop);
     root.append(wrapper);
     doc.body.append(hostElement);
     const anchor = mountAnchor(doc, t("anchor.button"), () => open());
@@ -2670,23 +2806,65 @@ footer { margin-top: 20px; }
       i18n.lang = i18n.lang === "ko" ? "en" : "ko";
       void host.storage.patch({ lang: i18n.lang }).catch(() => {
       });
-      launcher.textContent = t("launcher");
-      launcher.title = t("launcher.title");
       render();
     };
+    const onAutoUpdate = (record, value) => guard(async () => {
+      sourcesMessage = null;
+      try {
+        await setAutoUpdate(record, value, deps);
+        await afterChange();
+      } catch (e) {
+        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
+      }
+    });
+    const runAutoUpdates = (check) => guard(async () => {
+      if (!records.some((r) => r.autoUpdate)) return;
+      const results = await autoUpdate({ ...deps, approveNow: keepEnabled }, { check });
+      await host.storage.patch({ autoUpdatedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
+      });
+      if (!results.length) {
+        records = await store.load();
+        return;
+      }
+      const ok = results.filter((r) => !(r.result instanceof Error)).length;
+      const lines = results.map(({ record, result }) => t("result.updatedAllOne", { name: record.name, text: result instanceof Error ? describeError(result, t, { name: record.name }) : resultMessage(result).text }));
+      sourcesMessage = { kind: ok === results.length ? "ok" : "warn", text: [t("autoUpdate.done", { ok, total: results.length }), ...lines].join("\n") };
+      await afterChange();
+    });
     const setAutoCheck = (value) => {
       autoCheck = value;
       void host.storage.patch({ autoCheck }).catch(() => {
       });
       render();
     };
-    const setFloating = (value) => {
-      floating = value;
-      launcher.hidden = !floating;
-      void host.storage.patch({ floating }).catch(() => {
+    const reorganize = (next) => {
+      organize = next;
+      if (tagFilter && !organize.tags.some((x) => x.id === tagFilter)) tagFilter = null;
+      void host.storage.patch({ organize }).catch(() => {
       });
       render();
     };
+    function catalogUpdates() {
+      return CATALOG.filter((entry) => {
+        const found = catalogRow(entry);
+        const state = found?.ours ? found.row.record?.latest?.state : void 0;
+        return state === "update" || state === "changed";
+      }).length;
+    }
+    async function checkCatalogQuietly() {
+      const stale = (r) => !r.lastCheckedAt || Date.now() - Date.parse(r.lastCheckedAt) > 6 * 36e5;
+      const due = records.filter((r) => CATALOG.some((e) => isCatalogSource(e, r.source)) && stale(r));
+      if (!due.length || busy) return;
+      try {
+        for (const record of due) {
+          const checked = await checkSource(record, deps);
+          records = records.map((r) => r.id === record.id ? checked : r);
+        }
+        await store.save(records);
+        await loadRows();
+      } catch {
+      }
+    }
     const message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
     function gateLine() {
       if (policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: policyError }));
@@ -2769,18 +2947,27 @@ footer { margin-top: 20px; }
         el(
           "dl",
           {},
-          drow(t("preview.source"), link),
-          p.pkg.ref ? drow(t("preview.branch"), p.pkg.ref) : null,
-          drow(t("preview.name"), d.name),
-          drow(t("preview.version"), d.version ?? t("preview.none")),
+          drow(t("preview.name"), d.name, " ", el("span", { class: "muted" }, `v${d.version ?? t("preview.none")}`)),
           drow(t("preview.description"), d.description || t("preview.none")),
-          drow(t("preview.runtime"), t(d.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
           drow(t("preview.capabilities"), d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
-          drow(t("preview.files"), files),
-          drow(t("preview.downloaded"), formatBytes(p.pkg.downloadedBytes)),
           drow(t("preview.hash"), el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
           view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
           view ? drow(t("preview.changes"), changesBlock(p)) : null
+        ),
+        // where it comes from, what is in it and how big: there when wanted
+        el(
+          "details",
+          {},
+          el("summary", {}, t("preview.details")),
+          el(
+            "dl",
+            {},
+            drow(t("preview.source"), link),
+            p.pkg.ref ? drow(t("preview.branch"), p.pkg.ref) : null,
+            drow(t("preview.runtime"), t(d.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
+            drow(t("preview.files"), files),
+            drow(t("preview.downloaded"), formatBytes(p.pkg.downloadedBytes))
+          )
         ),
         code,
         p.pkg.readme ? el("details", { class: "readme" }, el("summary", {}, `${t("preview.readme")} (${p.pkg.readme.path})`), el("pre", { class: "readme" }, p.pkg.readme.text)) : null,
@@ -2871,10 +3058,7 @@ footer { margin-top: 20px; }
         render();
       };
       const primary = [];
-      if (record && extension) {
-        primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
-        if (needsUpdate) primary.push(el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
-      }
+      if (record && extension && needsUpdate) primary.push(el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
       if (extension && !record) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(extension) }, t("untracked.link")));
       if (record && !extension) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
         urlInput = record.input;
@@ -2886,7 +3070,8 @@ footer { margin-top: 20px; }
       const more = [];
       if (open2) {
         if (record && extension) {
-          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
+          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
+          if (!needsUpdate) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
           more.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, el("button", { class: "small", type: "button" }, t("action.open"))));
         }
         if (extension) {
@@ -2902,6 +3087,16 @@ footer { margin-top: 20px; }
           } }, t("action.delete")));
         }
         if (record) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
+        if (record && extension && extension.id !== host.extensionId) {
+          more.push(el("label", { class: "toggle" }, el("input", {
+            type: "checkbox",
+            class: "auto-update",
+            "data-focus": `auto-update:${record.id}`,
+            checked: record.autoUpdate === true,
+            disabled: busy,
+            onChange: (e) => void onAutoUpdate(record, e.target.checked)
+          }), t("autoUpdate.label"), help(t("help.autoUpdate"))));
+        }
         if (record && extension) {
           more.push(el("label", { class: "toggle" }, el("input", {
             type: "checkbox",
@@ -2933,6 +3128,10 @@ footer { margin-top: 20px; }
       ) : null;
       const sourceText = record ? describeSource(record.source) + (record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "") : null;
       const stateText = record?.lastError ? t("sources.error", { error: record.lastError }) : record?.latest && record.latest.state !== "up-to-date" ? t(`sources.state.${record.latest.state}`, { version: record.latest.version ?? "?" }) : null;
+      const orgKey = extension?.id ?? `record:${record?.id ?? ""}`;
+      const mine = organize.of[orgKey];
+      const tagChips = (mine?.tags ?? []).map((id) => organize.tags.find((x) => x.id === id)).filter((x) => !!x).map((x) => el("span", { class: "chip" }, `#${x.name}`));
+      const loudState = record?.lastError ? stateText : needsUpdate ? stateText : null;
       return el(
         "li",
         { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
@@ -2947,12 +3146,16 @@ footer { margin-top: 20px; }
             el("span", { class: "muted" }, `v${version ?? "?"}`),
             " ",
             ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))],
-            record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null
+            record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null,
+            record?.autoUpdate ? el("span", { class: "badge" }, t("autoUpdate.badge")) : null,
+            ...tagChips
           ),
           el("div", { class: "row" }, ...primary)
         ),
-        sourceText || stateText ? el("div", { class: "muted line" }, sourceText ?? "", sourceText && stateText ? " · " : "", stateText ? el("span", { class: `state ${record?.latest?.state ?? ""}` }, stateText) : null) : null,
-        extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
+        loudState ? el("div", { class: "muted line" }, el("span", { class: `state ${record?.latest?.state ?? ""}` }, loudState)) : null,
+        open2 && (sourceText || stateText) ? el("div", { class: "muted line" }, sourceText ?? "", sourceText && stateText ? " · " : "", stateText && !loudState ? el("span", { class: `state ${record?.latest?.state ?? ""}` }, stateText) : null) : null,
+        open2 && extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
+        open2 ? organizeControls(orgKey) : null,
         open2 ? el(
           "div",
           { class: "muted line" },
@@ -2969,10 +3172,34 @@ footer { margin-top: 20px; }
       );
     }
     function catalogSection() {
-      return el(
-        "section",
-        { class: "catalog" },
-        el("h3", {}, t("catalog.heading"), help(t("catalog.help"))),
+      if (!bundleOpen) return null;
+      const back = el(
+        "div",
+        { class: "pop-back", onClick: (e) => {
+          if (e.target === back) {
+            bundleOpen = false;
+            render();
+          }
+        } },
+        el(
+          "div",
+          { class: "pop catalog", role: "dialog", "aria-modal": "true", "aria-label": t("bundle.title") },
+          el(
+            "div",
+            { class: "pop-head" },
+            el("h3", {}, t("bundle.title"), help(t("catalog.help"))),
+            el("button", { class: "small", type: "button", "aria-label": t("close"), "data-focus": "bundle-close", onClick: () => {
+              bundleOpen = false;
+              render();
+            } }, "✕")
+          ),
+          ...catalogBody()
+        )
+      );
+      return back;
+    }
+    function catalogBody() {
+      return [
         el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => {
           const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: busy, onChange: (e) => {
             if (e.target.checked) catalogPicked.add(entry.name);
@@ -3001,7 +3228,7 @@ footer { margin-top: 20px; }
         ),
         message(catalogMessage),
         ...catalogResults.map((m) => message(m))
-      );
+      ];
     }
     function catalogRow(entry) {
       if (rows === null) return void 0;
@@ -3017,11 +3244,44 @@ footer { margin-top: 20px; }
       const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
       const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
       const version = ext.version ?? "";
-      return el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`);
+      const latest = found.ours ? found.row.record?.latest : void 0;
+      const update = latest && (latest.state === "update" || latest.state === "changed") ? el("span", { class: "badge approve" }, t("catalog.update", { version: latest.version ?? "?" })) : null;
+      return fragment(el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`), update);
+    }
+    function organizeControls(key) {
+      if (!organize.folders.length && !organize.tags.length) return null;
+      const mine = organize.of[key];
+      const folder = organize.folders.length ? el(
+        "label",
+        { class: "toggle" },
+        t("organize.folder"),
+        " ",
+        el(
+          "select",
+          { "data-focus": `folder:${key}`, onChange: (e) => reorganize(setFolder(organize, key, e.target.value || null)) },
+          el("option", { value: "", selected: !mine?.folder }, t("organize.noFolder")),
+          ...organize.folders.map((f) => el("option", { value: f.id, selected: mine?.folder === f.id }, f.name))
+        )
+      ) : null;
+      const tags = organize.tags.map((x) => el("button", { class: `chip${mine?.tags?.includes(x.id) ? " on" : ""}`, type: "button", "aria-pressed": String(!!mine?.tags?.includes(x.id)), "data-focus": `tag:${key}:${x.id}`, onClick: () => reorganize(toggleTag(organize, key, x.id)) }, `#${x.name}`));
+      return el("div", { class: "actions" }, folder, ...tags);
     }
     function itemsSection() {
       const list = rows ?? records.map((record) => ({ extension: null, record }));
-      const sorted = [...list].sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
+      const keyOf = (r) => r.extension?.id ?? `record:${r.record?.id ?? ""}`;
+      const shown = list.filter((r) => !tagFilter || organize.of[keyOf(r)]?.tags?.includes(tagFilter)).sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
+      const ul = (items) => el("ul", { class: "items" }, ...items.map((r) => itemRow(r.extension, r.record)));
+      const grouped = [];
+      if (organize.folders.length) {
+        for (const f of organize.folders) {
+          const inside = shown.filter((r) => organize.of[keyOf(r)]?.folder === f.id);
+          const box = fold(`folder:${f.id}`, [f.name, el("span", { class: "muted" }, String(inside.length))], inside.length ? ul(inside) : el("p", { class: "muted" }, t("organize.empty")));
+          box.classList.add("folder");
+          grouped.push(box);
+        }
+        const loose = shown.filter((r) => !organize.folders.some((f) => organize.of[keyOf(r)]?.folder === f.id));
+        if (loose.length) grouped.push(el("h3", {}, t("organize.noFolder")), ul(loose));
+      } else if (shown.length) grouped.push(ul(shown));
       return el(
         "section",
         { class: "items" },
@@ -3034,6 +3294,33 @@ footer { margin-top: 20px; }
             { class: "row" },
             el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
             el("button", { class: "small primary", type: "button", disabled: busy || !records.some((r) => r.latest && r.latest.state !== "up-to-date" && r.latest.state !== "unknown"), onClick: onUpdateAll }, t("action.updateAll")),
+            el("button", { class: "small", type: "button", disabled: busy, title: t("action.refresh"), "aria-label": t("action.refresh"), onClick: onRefresh }, "↻")
+          )
+        ),
+        organize.tags.length ? el(
+          "div",
+          { class: "chips" },
+          el("button", { class: `chip${tagFilter ? "" : " on"}`, type: "button", onClick: () => {
+            tagFilter = null;
+            render();
+          } }, t("organize.allTags")),
+          ...organize.tags.map((x) => el("button", { class: `chip${tagFilter === x.id ? " on" : ""}`, type: "button", "aria-pressed": String(tagFilter === x.id), onClick: () => {
+            tagFilter = tagFilter === x.id ? null : x.id;
+            render();
+          } }, `#${x.name}`))
+        ) : null,
+        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
+        list.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : null,
+        ...grouped,
+        message(reconcileMessage),
+        message(sourcesMessage),
+        fold(
+          "prefs",
+          [t("prefs.heading")],
+          el(
+            "div",
+            { class: "actions" },
+            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
             el("label", { class: "toggle" }, el("input", {
               type: "checkbox",
               class: "keep-enabled",
@@ -3050,40 +3337,6 @@ footer { margin-top: 20px; }
                 render();
               }
             }), t("option.keepEnabled"), help(t("help.keepEnabled"))),
-            el("button", { class: "small", type: "button", disabled: busy, onClick: onRefresh }, t("action.refresh"))
-          )
-        ),
-        keepFor ? el(
-          "div",
-          { class: "msg loud keep-confirm" },
-          el("div", {}, t("keep.confirm.title")),
-          el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
-          el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
-            if (keepFor) keepFor.code = e.target.checked;
-            render();
-          } }), t("auto.ack.code")),
-          el(
-            "div",
-            { class: "actions" },
-            el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => setKeepEnabled(true) }, t("auto.confirm.on")),
-            el("button", { class: "small", type: "button", onClick: () => {
-              keepFor = null;
-              render();
-            } }, t("action.cancel"))
-          )
-        ) : null,
-        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
-        sorted.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : el("ul", { class: "items" }, ...sorted.map((r) => itemRow(r.extension, r.record))),
-        message(reconcileMessage),
-        message(sourcesMessage),
-        fold(
-          "prefs",
-          [t("prefs.heading")],
-          el(
-            "div",
-            { class: "actions" },
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "floating", checked: floating, onChange: (e) => setFloating(e.target.checked) }), t("option.floating"), help(t("help.floating"))),
             el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
               transfer = { kind: "export", text: exportSources(records) };
               render();
@@ -3095,10 +3348,61 @@ footer { margin-top: 20px; }
             help(t("help.transfer")),
             el("span", { class: "muted" }, t("anchor.hint"))
           ),
+          keepFor ? el(
+            "div",
+            { class: "msg loud keep-confirm" },
+            el("div", {}, t("keep.confirm.title")),
+            el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
+            el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
+              if (keepFor) keepFor.code = e.target.checked;
+              render();
+            } }), t("auto.ack.code")),
+            el(
+              "div",
+              { class: "actions" },
+              el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => setKeepEnabled(true) }, t("auto.confirm.on")),
+              el("button", { class: "small", type: "button", onClick: () => {
+                keepFor = null;
+                render();
+              } }, t("action.cancel"))
+            )
+          ) : null,
           transferBlock(),
+          organizeBlock(),
           logBlock()
         )
       );
+    }
+    function organizeBlock() {
+      const editor = (kind) => {
+        const items = organize[kind];
+        const box = el("input", { type: "text", "data-focus": `org-new:${kind}`, placeholder: t(kind === "folders" ? "organize.newFolder" : "organize.newTag"), "aria-label": t(kind === "folders" ? "organize.newFolder" : "organize.newTag") });
+        const add = () => {
+          if (box.value.trim()) reorganize(kind === "folders" ? addFolder(organize, box.value) : addTag(organize, box.value));
+        };
+        box.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            add();
+          }
+        });
+        return el(
+          "div",
+          {},
+          el("div", { class: "muted" }, t(kind === "folders" ? "organize.folders" : "organize.tags")),
+          el(
+            "ul",
+            { class: "org-list" },
+            ...items.map((x) => {
+              const name = el("input", { type: "text", value: x.name, "aria-label": x.name, "data-focus": `org:${x.id}` });
+              name.addEventListener("change", () => reorganize(rename(organize, kind, x.id, name.value)));
+              return el("li", {}, name, el("button", { class: "small", type: "button", onClick: () => reorganize(remove(organize, kind, x.id)) }, t("organize.delete")));
+            }),
+            el("li", {}, box, el("button", { class: "small", type: "button", onClick: add }, t("organize.add")))
+          )
+        );
+      };
+      return fold("organize", [t("organize.heading")], editor("folders"), editor("tags"));
     }
     function transferBlock() {
       if (!transfer) return null;
@@ -3184,7 +3488,7 @@ footer { margin-top: 20px; }
     }
     function renderPanel() {
       backdrop.hidden = !isOpen;
-      launcher.setAttribute("aria-expanded", String(isOpen));
+      const updates = catalogUpdates();
       panel.replaceChildren(fragment(
         el(
           "header",
@@ -3199,6 +3503,17 @@ footer { margin-top: 20px; }
           el(
             "div",
             { class: "tools" },
+            el("button", {
+              class: `small bundle${updates ? " has-update" : ""}`,
+              type: "button",
+              "data-focus": "bundle",
+              title: updates ? t("bundle.hasUpdate") : t("bundle.title"),
+              "aria-haspopup": "dialog",
+              onClick: () => {
+                bundleOpen = true;
+                render();
+              }
+            }, el("span", { class: "cake", "aria-hidden": "true" }, "🍰"), " ", t("bundle.button"), updates ? el("span", { class: "dot", role: "img", "aria-label": t("bundle.hasUpdate") }) : null),
             el("button", { class: "small", type: "button", onClick: switchLang }, t("lang.switch")),
             el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: () => close() }, "✕")
           )
@@ -3243,8 +3558,8 @@ footer { margin-top: 20px; }
           message(installMessage)
         ),
         prepared ? previewSection(prepared) : null,
-        catalogSection(),
-        itemsSection()
+        itemsSection(),
+        catalogSection()
       ));
     }
     function open() {
@@ -3253,16 +3568,17 @@ footer { margin-top: 20px; }
       panel.focus();
       void Promise.all([loadPolicy(), loadRows(), loadLog(), reconcileRecords()]).then(() => {
         render();
-        if (autoCheck && records.length && !busy) void onCheckAll();
+        if (autoCheck && records.length && !busy) void onCheckAll().then(() => runAutoUpdates(false));
+        else void checkCatalogQuietly().then(() => render());
       });
     }
     function close() {
       isOpen = false;
+      bundleOpen = false;
       reconcileMessage = null;
       catalogMessage = null;
       catalogResults = [];
       render();
-      if (floating) launcher.focus();
     }
     function toggle() {
       if (isOpen) close();
@@ -3272,16 +3588,15 @@ footer { margin-top: 20px; }
       try {
         const data = await host.storage.get();
         if (data.lang === "ko" || data.lang === "en") i18n.lang = data.lang;
-        autoCheck = data.autoCheck === true;
-        floating = data.floating === true;
+        autoCheck = data.autoCheck !== false;
+        autoUpdatedAt = typeof data.autoUpdatedAt === "string" ? Date.parse(data.autoUpdatedAt) || 0 : 0;
         keepEnabled = data.keepEnabled === true;
-        launcher.hidden = !floating;
+        organize = normalizeOrganize(data.organize);
       } catch {
       }
-      launcher.textContent = t("launcher");
-      launcher.title = t("launcher.title");
       await Promise.all([loadPolicy(), loadRecords()]);
       render();
+      if (records.some((r) => r.autoUpdate) && Date.now() - autoUpdatedAt > 6 * 36e5) void runAutoUpdates(true);
     })();
     render();
     return {
@@ -3303,7 +3618,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.8.0" : "0.0.0";
+  var VERSION = true ? "0.8.1" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
