@@ -1,4 +1,4 @@
-/*! Fetchy 0.8.2 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.8.3 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: MIT */
@@ -90,36 +90,49 @@
     return value;
   }
   async function normalizeManifest(parsed, read) {
-    const all = entries(parsed);
-    if (all.length === 0) throw new ManifestError({ code: "no-entries" });
-    if (all.length > 1) throw new ManifestError({ code: "multiple-entries", names: all.map(nameOf) });
-    const entry = all[0];
+    const entry = singleEntry(parsed);
     const config = configOf(entry);
     if (!config) throw new ManifestError({ code: "not-an-object" });
     const kind = kindOf(entry);
     const warnings = [];
     const files = [];
     if (kind && !KNOWN_KINDS.includes(kind)) warnings.push({ code: "unknown-kind", kind });
+    const name = checkedName(config);
+    const { version, dropped } = normalizeVersion(config.version);
+    if (dropped !== null) warnings.push({ code: "version-dropped", value: dropped });
+    const description = checkedDescription(config);
+    const about = { name, version, description };
+    const draft = runtimeOf(config, kind) === "server" ? await serverDraft(about, config, read, files) : await clientDraft(about, config, kind, read, files, warnings);
+    return { kind, warnings, files, draft };
+  }
+  function singleEntry(parsed) {
+    const all = entries(parsed);
+    if (all.length === 0) throw new ManifestError({ code: "no-entries" });
+    if (all.length > 1) throw new ManifestError({ code: "multiple-entries", names: all.map(nameOf) });
+    return all[0];
+  }
+  function checkedName(config) {
     const name = typeof config.name === "string" ? config.name.trim() : "";
     if (!name) throw new ManifestError({ code: "name-missing" });
     if (name.length > LIMITS.nameLength) throw new ManifestError({ code: "name-too-long", length: name.length });
-    const { version, dropped } = normalizeVersion(config.version);
-    if (dropped !== null) warnings.push({ code: "version-dropped", value: dropped });
+    return name;
+  }
+  function checkedDescription(config) {
     const description = typeof config.description === "string" ? config.description : "";
     if (description.length > LIMITS.descriptionLength) {
       throw new ManifestError({ code: "description-too-long", length: description.length });
     }
-    const runtime = typeof config.runtime === "string" && config.runtime.toLowerCase() === "server" || kind === "marinara.server-extension" || kind === "marinara.personal-server-extension" ? "server" : "client";
-    if (runtime === "server") {
-      const serverJs = await readPaths(config.serverJsPath ?? config.serverJsPaths ?? config.jsPath ?? config.jsPaths, "serverJs", read, files) ?? inline(config.serverJs ?? config.js, "serverJs", files);
-      if (!serverJs?.trim()) throw new ManifestError({ code: "server-no-code" });
-      return {
-        kind,
-        warnings,
-        files,
-        draft: { name, version, description, runtime, capabilities: [], css: null, js: null, serverJs }
-      };
-    }
+    return description;
+  }
+  function runtimeOf(config, kind) {
+    return typeof config.runtime === "string" && config.runtime.toLowerCase() === "server" || kind === "marinara.server-extension" || kind === "marinara.personal-server-extension" ? "server" : "client";
+  }
+  async function serverDraft(about, config, read, files) {
+    const serverJs = await readPaths(config.serverJsPath ?? config.serverJsPaths ?? config.jsPath ?? config.jsPaths, "serverJs", read, files) ?? inline(config.serverJs ?? config.js, "serverJs", files);
+    if (!serverJs?.trim()) throw new ManifestError({ code: "server-no-code" });
+    return { ...about, runtime: "server", capabilities: [], css: null, js: null, serverJs };
+  }
+  async function clientDraft(about, config, kind, read, files, warnings) {
     const css = await readPaths(config.cssPath ?? config.cssPaths, "css", read, files) ?? inline(config.css, "css", files);
     const js = await readPaths(config.jsPath ?? config.jsPaths, "js", read, files) ?? inline(config.js, "js", files);
     if (!css?.trim() && !js?.trim()) throw new ManifestError({ code: "no-code" });
@@ -133,12 +146,7 @@
       if (!capabilities.includes(FULL_PAGE_ACCESS)) capabilities.push(FULL_PAGE_ACCESS);
       warnings.push({ code: "legacy-kind-full-page" });
     }
-    return {
-      kind,
-      warnings,
-      files,
-      draft: { name, version, description, runtime, capabilities, css, js, serverJs: null }
-    };
+    return { ...about, runtime: "client", capabilities, css, js, serverJs: null };
   }
   function apiPayload(draft) {
     return draft.runtime === "server" ? { name: draft.name, version: draft.version, description: draft.description, runtime: "server", capabilities: [], serverJs: draft.serverJs } : { name: draft.name, version: draft.version, description: draft.description, runtime: "client", capabilities: draft.capabilities, css: draft.css, js: draft.js };
@@ -146,8 +154,8 @@
 
   // src/engine-api.ts
   var EngineApiError = class extends Error {
-    constructor(code, status, message, existingId = null) {
-      super(message);
+    constructor(code, status, message2, existingId = null) {
+      super(message2);
       this.code = code;
       this.status = status;
       this.existingId = existingId;
@@ -167,10 +175,10 @@
     } catch {
     }
     const record = payload && typeof payload === "object" ? payload : {};
-    const message = [record.error, record.message].filter((v) => typeof v === "string").join(" ") || text || `HTTP ${response.status}`;
+    const message2 = [record.error, record.message].filter((v) => typeof v === "string").join(" ") || text || `HTTP ${response.status}`;
     const existingId = typeof record.id === "string" ? record.id : null;
     const status = response.status;
-    const lower = message.toLowerCase();
+    const lower = message2.toLowerCase();
     let code = "http";
     if (status === 409 && existingId) code = "name-exists";
     else if (status === 404) code = "not-found";
@@ -181,7 +189,7 @@
       else if (lower.includes("csrf")) code = "csrf";
       else code = "privileged";
     }
-    return new EngineApiError(code, status, message, existingId);
+    return new EngineApiError(code, status, message2, existingId);
   }
   function createEngineClient(options) {
     const base = (options.baseUrl ?? "").replace(/\/$/, "") + "/api/personal-extensions";
@@ -526,1196 +534,6 @@
       ].join("\n");
     }
   };
-
-  // src/github.ts
-  var SourceUrlError = class extends Error {
-    constructor(reason, message) {
-      super(message);
-      this.reason = reason;
-      this.name = "SourceUrlError";
-    }
-    reason;
-  };
-  var MANIFEST_NAMES = ["manifest.json", "marinara-extension.json", "marinara-extensions.json", "marinara-personal-extensions.json"];
-  var MANIFEST_FILENAMES = MANIFEST_NAMES;
-  var SEGMENT = /^[A-Za-z0-9_.-]+$/;
-  function cleanPath(path) {
-    return path.split("/").map((s) => s.trim()).filter((s) => s && s !== "." && s !== "..").join("/");
-  }
-  function stripManifestFilename(path) {
-    const parts = cleanPath(path).split("/").filter(Boolean);
-    const last = parts[parts.length - 1]?.toLowerCase();
-    if (last && MANIFEST_NAMES.includes(last)) parts.pop();
-    return parts.join("/");
-  }
-  function splitRef(text) {
-    const at = text.lastIndexOf("@");
-    if (at <= 0) return { body: text, ref: null };
-    const ref = text.slice(at + 1).trim();
-    return ref ? { body: text.slice(0, at), ref } : { body: text, ref: null };
-  }
-  function repoSource(owner, repo, ref, path) {
-    if (!SEGMENT.test(owner) || !SEGMENT.test(repo)) {
-      throw new SourceUrlError("bad-github-path", `Not a GitHub owner/repo: ${owner}/${repo}`);
-    }
-    return { kind: "github-repo", owner, repo: repo.replace(/\.git$/i, ""), ref, path: stripManifestFilename(path) };
-  }
-  function fileSource(url) {
-    const lower = url.pathname.toLowerCase();
-    if (lower.endsWith(".zip")) return { kind: "zip-url", url: url.href };
-    if (lower.endsWith(".json")) return { kind: "manifest-url", url: url.href };
-    return null;
-  }
-  function parseSourceUrl(input) {
-    const text = input.trim();
-    if (!text) throw new SourceUrlError("empty", "Enter a URL");
-    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
-      const { body, ref } = splitRef(text);
-      const parts = cleanPath(body).split("/").filter(Boolean);
-      if (parts.length < 2) throw new SourceUrlError("unsupported", `Not a URL or owner/repo: ${text}`);
-      const [owner, repo, ...rest] = parts;
-      return repoSource(owner, repo, ref, rest.join("/"));
-    }
-    let url;
-    try {
-      url = new URL(text);
-    } catch {
-      throw new SourceUrlError("unsupported", `Not a valid URL: ${text}`);
-    }
-    if (url.protocol !== "https:") throw new SourceUrlError("not-https", "Only https:// URLs are supported");
-    const host = url.hostname.toLowerCase();
-    if (host === "github.com" || host === "www.github.com") {
-      const { body, ref: atRef } = splitRef(url.pathname);
-      const parts = cleanPath(body).split("/").filter(Boolean);
-      if (parts.length < 2) throw new SourceUrlError("bad-github-path", "A GitHub URL needs /owner/repo");
-      const [owner, repo, mode, ref, ...rest] = parts;
-      if (mode === "tree" || mode === "blob" || mode === "raw") {
-        if (!ref) throw new SourceUrlError("bad-github-path", `A /${mode}/ URL needs a branch`);
-        return repoSource(owner, repo, ref, rest.join("/"));
-      }
-      if (mode) throw new SourceUrlError("bad-github-path", `Unsupported GitHub URL (use the repository or a /tree/<branch>/ folder): ${text}`);
-      return repoSource(owner, repo, atRef, "");
-    }
-    if (host === "raw.githubusercontent.com") {
-      const parts = cleanPath(url.pathname).split("/").filter(Boolean);
-      if (parts.length < 3) throw new SourceUrlError("bad-github-path", "A raw URL needs /owner/repo/branch/…");
-      const [owner, repo, ...rest] = parts;
-      let ref;
-      if (rest[0] === "refs" && (rest[1] === "heads" || rest[1] === "tags") && rest[2]) {
-        ref = rest.splice(0, 3).join("/");
-      } else {
-        ref = rest.shift();
-      }
-      const file2 = fileSource(url);
-      if (file2) return file2;
-      return repoSource(owner, repo, ref, rest.join("/"));
-    }
-    const file = fileSource(url);
-    if (file) return file;
-    throw new SourceUrlError("unsupported", `Unsupported URL (use a GitHub repository, a manifest.json URL or a .zip URL): ${text}`);
-  }
-  function rawFileUrl(owner, repo, ref, path) {
-    const encodedPath = cleanPath(path).split("/").filter(Boolean).map(encodeURIComponent).join("/");
-    const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
-    return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodedRef}/${encodedPath}`;
-  }
-  function directoryOf(fileUrl) {
-    const url = new URL(fileUrl);
-    url.search = "";
-    url.hash = "";
-    url.pathname = url.pathname.replace(/[^/]*$/, "");
-    return url.href;
-  }
-  function browseUrl(source, ref = null) {
-    if (source.kind !== "github-repo") return source.url;
-    const branch = ref ?? source.ref;
-    const base = `https://github.com/${source.owner}/${source.repo}`;
-    if (!branch) return base;
-    return source.path ? `${base}/tree/${branch}/${source.path}` : `${base}/tree/${branch}`;
-  }
-  function describeSource(source) {
-    if (source.kind !== "github-repo") return source.url;
-    const at = source.ref ? `@${source.ref}` : "";
-    return source.path ? `${source.owner}/${source.repo}/${source.path}${at}` : `${source.owner}/${source.repo}${at}`;
-  }
-  var normalizePath = cleanPath;
-
-  // src/zip.ts
-  var ZipError = class extends Error {
-    constructor(message) {
-      super(`zip: ${message}`);
-      this.name = "ZipError";
-    }
-  };
-  var fail = (why) => {
-    throw new ZipError(why);
-  };
-  var MAX_ZIP_BYTES = 32 * 1024 * 1024;
-  var MAX_ENTRIES = 8192;
-  var EOCD = 101010256;
-  var CENTRAL = 33639248;
-  var LOCAL = 67324752;
-  async function listZip(bytes) {
-    if (bytes.byteLength > MAX_ZIP_BYTES) fail(`archive is larger than ${MAX_ZIP_BYTES} bytes`);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    let eocd = -1;
-    for (let p2 = bytes.byteLength - 22; p2 >= Math.max(0, bytes.byteLength - 22 - 65535); p2--) {
-      if (view.getUint32(p2, true) === EOCD) {
-        eocd = p2;
-        break;
-      }
-    }
-    if (eocd < 0) fail("not a zip file");
-    const count = view.getUint16(eocd + 10, true);
-    const dirSize = view.getUint32(eocd + 12, true);
-    const dirOffset = view.getUint32(eocd + 16, true);
-    if (count > MAX_ENTRIES) fail("too many entries");
-    if (dirOffset + dirSize > bytes.byteLength) fail("central directory out of range");
-    const names2 = new TextDecoder();
-    const entries2 = /* @__PURE__ */ new Map();
-    let p = dirOffset;
-    for (let i = 0; i < count; i++) {
-      if (p + 46 > bytes.byteLength || view.getUint32(p, true) !== CENTRAL) fail("bad central directory");
-      const method = view.getUint16(p + 10, true);
-      const crc = view.getUint32(p + 16, true);
-      const compressed = view.getUint32(p + 20, true);
-      const size = view.getUint32(p + 24, true);
-      const nameLen = view.getUint16(p + 28, true);
-      const extraLen = view.getUint16(p + 30, true);
-      const commentLen = view.getUint16(p + 32, true);
-      const offset = view.getUint32(p + 42, true);
-      if (p + 46 + nameLen > bytes.byteLength) fail("bad central directory");
-      const name = names2.decode(bytes.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/").replace(/^\/+/, "");
-      if (offset + 30 + compressed > bytes.byteLength) fail(`${name} lies past the end of the file`);
-      if (name && !name.endsWith("/")) {
-        if (entries2.has(name)) fail(`duplicate entry ${name}`);
-        if (/^(\.\.?)(\/|$)|\/\.\.(\/|$)/.test(name)) fail(`unsafe entry name ${name}`);
-        entries2.set(name, { name, method, compressed, size, crc, offset });
-      }
-      p += 46 + nameLen + extraLen + commentLen;
-    }
-    return entries2;
-  }
-  async function readZipEntry(bytes, entry, maxBytes) {
-    if (entry.size > maxBytes) fail(`${entry.name} is too large (${entry.size} bytes)`);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (view.getUint32(entry.offset, true) !== LOCAL) fail(`bad local header for ${entry.name}`);
-    const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
-    if (start + entry.compressed > bytes.byteLength) fail(`${entry.name} lies past the end of the file`);
-    const data = bytes.subarray(start, start + entry.compressed);
-    let out;
-    if (entry.method === 0) {
-      if (entry.compressed !== entry.size) fail(`${entry.name}: stored size mismatch`);
-      out = data.slice();
-    } else if (entry.method === 8) {
-      out = await inflate(data, entry);
-    } else {
-      return fail(`unsupported compression ${entry.method} for ${entry.name}`);
-    }
-    if (crc32(out) !== entry.crc) fail(`${entry.name} is corrupt (CRC mismatch)`);
-    return out;
-  }
-  async function inflate(data, entry) {
-    const out = new Uint8Array(entry.size);
-    const copy = new Uint8Array(data.byteLength);
-    copy.set(data);
-    const stream = new Blob([copy]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    const reader = stream.getReader();
-    let n = 0;
-    try {
-      for (; ; ) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (n + value.length > out.length) fail(`${entry.name} inflates past its stated size`);
-        out.set(value, n);
-        n += value.length;
-      }
-    } catch (e) {
-      void reader.cancel().catch(() => {
-      });
-      if (e instanceof ZipError) throw e;
-      fail(`${entry.name} is corrupt (${e instanceof Error ? e.message : String(e)})`);
-    }
-    if (n !== out.length) fail(`${entry.name} is shorter than its stated size`);
-    return out;
-  }
-  var CRC_TABLE = (() => {
-    const table = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
-      table[n] = c >>> 0;
-    }
-    return table;
-  })();
-  function crc32(data) {
-    let c = 4294967295;
-    for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
-    return (c ^ 4294967295) >>> 0;
-  }
-
-  // src/fetch-package.ts
-  var FetchError = class extends Error {
-    constructor(code, message, url, status = 0, tried = []) {
-      super(message);
-      this.code = code;
-      this.url = url;
-      this.status = status;
-      this.tried = tried;
-      this.name = "FetchError";
-    }
-    code;
-    url;
-    status;
-    tried;
-  };
-  var DEFAULT_TIMEOUT_MS = 25e3;
-  var DEFAULT_BUDGET_BYTES = 16 * 1024 * 1024;
-  var README_NAMES = ["README-ko.md", "README.ko.md", "README_ko.md", "README-KO.md", "README.md", "readme.md", "README.txt"];
-  var DEFAULT_BRANCHES = ["main", "master"];
-  var MAX_README_BYTES = 200 * 1024;
-  var Budget = class {
-    constructor(limit) {
-      this.limit = limit;
-    }
-    limit;
-    used = 0;
-    add(bytes, url) {
-      this.used += bytes;
-      if (this.used > this.limit) throw new FetchError("too-large", `package exceeds ${this.limit} bytes`, url);
-    }
-  };
-  function withCacheBust(url, options) {
-    if (!options.freshest) return url;
-    const parsed = new URL(url);
-    if (parsed.hostname !== "raw.githubusercontent.com") return url;
-    parsed.searchParams.set("_", String((options.now ?? Date.now)()));
-    return parsed.href;
-  }
-  async function fetchResponse(url, options, accept = "text/plain, application/json, */*") {
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS) : null;
-    let response;
-    try {
-      response = await options.fetch(withCacheBust(url, options), {
-        cache: "no-store",
-        redirect: "follow",
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        headers: { Accept: accept },
-        signal: controller?.signal
-      });
-    } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") throw new FetchError("timeout", `no answer within ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS} ms`, url);
-      throw new FetchError("network", e instanceof Error ? e.message : String(e), url);
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-    }
-    if (response.status === 404) return null;
-    if ((response.status === 403 || response.status === 429) && new URL(url).hostname === "api.github.com") {
-      throw new FetchError("rate-limited", `GitHub API ${response.status}`, url, response.status);
-    }
-    if (!response.ok) throw new FetchError("http", `HTTP ${response.status}`, url, response.status);
-    return response;
-  }
-  async function fetchBytes(url, options, maxBytes, budget, accept) {
-    const response = await fetchResponse(url, options, accept);
-    if (!response) return null;
-    const declared = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > maxBytes) throw new FetchError("too-large", `${declared} bytes`, url);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes) throw new FetchError("too-large", `${bytes.byteLength} bytes`, url);
-    budget.add(bytes.byteLength, url);
-    return bytes;
-  }
-  async function fetchText(url, options, maxBytes, budget) {
-    const bytes = await fetchBytes(url, options, maxBytes, budget);
-    return bytes === null ? null : new TextDecoder("utf-8").decode(bytes);
-  }
-  function parseJson(text, url) {
-    try {
-      return JSON.parse(text.replace(/^\uFEFF/, ""));
-    } catch (e) {
-      throw new FetchError("bad-json", e instanceof Error ? e.message : String(e), url);
-    }
-  }
-  async function readme(read) {
-    const seen = /* @__PURE__ */ new Set();
-    for (const name of README_NAMES) {
-      if (seen.has(name.toLowerCase())) continue;
-      seen.add(name.toLowerCase());
-      try {
-        const text = await read(name);
-        if (text != null && text.trim()) return { path: name, text };
-      } catch {
-      }
-    }
-    return null;
-  }
-  async function defaultBranch(owner, repo, options, budget) {
-    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-    try {
-      const text = await fetchText(url, { ...options, freshest: false }, 256 * 1024, budget);
-      if (text == null) return null;
-      const info = JSON.parse(text);
-      return typeof info.default_branch === "string" && info.default_branch ? info.default_branch : null;
-    } catch {
-      return null;
-    }
-  }
-  var COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-  async function commitOf(owner, repo, ref, options, budget) {
-    if (COMMIT_SHA.test(ref)) return ref;
-    const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
-    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodedRef}`;
-    try {
-      const bytes = await fetchBytes(url, { ...options, freshest: false }, 1024, budget, "application/vnd.github.sha");
-      const sha = bytes === null ? "" : new TextDecoder("utf-8").decode(bytes).trim().toLowerCase();
-      return COMMIT_SHA.test(sha) ? sha : null;
-    } catch {
-      return null;
-    }
-  }
-  async function readConsistently(manifestUrl, manifestText, reread, read) {
-    let text = manifestText;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const manifest = parseJson(text, manifestUrl);
-      const normalized = await normalizeManifest(manifest, read);
-      const again = await reread();
-      if (again === null) throw new FetchError("source-changed", "the manifest disappeared during the download", manifestUrl);
-      if (again === text) return { manifest, normalized, manifestText: text };
-      text = again;
-    }
-    throw new FetchError("source-changed", "the manifest kept changing during the download", manifestUrl);
-  }
-  async function fromGithub(source, options) {
-    const budget = new Budget(options.budgetBytes ?? DEFAULT_BUDGET_BYTES);
-    const dir = normalizePath(source.path);
-    const tried = [];
-    const candidates = source.ref ? [source.ref] : [...DEFAULT_BRANCHES];
-    for (let i = 0; i < candidates.length; i++) {
-      const ref = candidates[i];
-      tried.push(ref);
-      for (const filename of MANIFEST_FILENAMES) {
-        const manifestUrl = rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${filename}` : filename);
-        const readManifest = () => fetchText(manifestUrl, options, LIMITS.textFileBytes, budget);
-        const text = await readManifest();
-        if (text == null) continue;
-        const readerAt = (at, opts) => async (path) => {
-          const clean = normalizePath(path);
-          if (!clean) return null;
-          for (const candidate of dir ? [`${dir}/${clean}`, clean] : [clean]) {
-            const found = await fetchText(rawFileUrl(source.owner, source.repo, at, candidate), opts, LIMITS.textFileBytes, budget);
-            if (found != null) return found;
-          }
-          return null;
-        };
-        const readmeAt = (at, opts) => options.readme === false ? null : readme((name) => fetchText(rawFileUrl(source.owner, source.repo, at, dir ? `${dir}/${name}` : name), opts, MAX_README_BYTES, budget));
-        const done = async (manifest2, normalized2, commit2, at, opts) => ({
-          source,
-          ref,
-          commit: commit2,
-          manifestUrl,
-          manifest: manifest2,
-          normalized: normalized2,
-          browseUrl: browseUrl(source, ref),
-          readme: await readmeAt(at, opts),
-          downloadedBytes: budget.used
-        });
-        const commit = options.pinCommit ? await commitOf(source.owner, source.repo, ref, options, budget) : null;
-        if (commit) {
-          const atCommit = { ...options, freshest: false };
-          const pinnedText = commit === ref ? text : await fetchText(rawFileUrl(source.owner, source.repo, commit, dir ? `${dir}/${filename}` : filename), atCommit, LIMITS.textFileBytes, budget);
-          if (pinnedText != null) {
-            const manifest2 = parseJson(pinnedText, manifestUrl);
-            return done(manifest2, await normalizeManifest(manifest2, readerAt(commit, atCommit)), commit, commit, atCommit);
-          }
-        }
-        const { manifest, normalized } = await readConsistently(manifestUrl, text, readManifest, readerAt(ref, options));
-        return done(manifest, normalized, null, ref, options);
-      }
-      if (!source.ref && i === candidates.length - 1 && candidates.length === DEFAULT_BRANCHES.length) {
-        const branch = await defaultBranch(source.owner, source.repo, options, budget);
-        if (branch && !candidates.includes(branch)) candidates.push(branch);
-      }
-    }
-    const where = dir ? `${source.owner}/${source.repo}/${dir}` : `${source.owner}/${source.repo}`;
-    throw new FetchError("manifest-not-found", `No manifest.json in ${where} (tried ${tried.join(", ")})`, browseUrl(source), 404, tried);
-  }
-  async function fromManifestUrl(source, options) {
-    const budget = new Budget(options.budgetBytes ?? DEFAULT_BUDGET_BYTES);
-    const readManifest = () => fetchText(source.url, options, LIMITS.textFileBytes, budget);
-    const text = await readManifest();
-    if (text == null) throw new FetchError("manifest-not-found", `HTTP 404`, source.url, 404);
-    const base = directoryOf(source.url);
-    const resolve = (path) => new URL(normalizePath(path), base).href;
-    const read = async (path) => normalizePath(path) ? fetchText(resolve(path), options, LIMITS.textFileBytes, budget) : null;
-    const { manifest, normalized } = await readConsistently(source.url, text, readManifest, read);
-    return {
-      source,
-      ref: null,
-      commit: null,
-      manifestUrl: source.url,
-      manifest,
-      normalized,
-      browseUrl: source.url,
-      readme: options.readme === false ? null : await readme((name) => fetchText(resolve(name), options, MAX_README_BYTES, budget)),
-      downloadedBytes: budget.used
-    };
-  }
-  function pickManifestEntry(entries2) {
-    const candidates = [...entries2.values()].filter((e) => MANIFEST_FILENAMES.includes(e.name.split("/").pop()?.toLowerCase() ?? ""));
-    if (candidates.length === 0) throw new FetchError("manifest-not-found", "The zip contains no manifest.json", "", 0);
-    const depth = (e) => e.name.split("/").length;
-    const rootNamed = (e) => (e.name.split("/").pop()?.toLowerCase() ?? "") !== "manifest.json";
-    candidates.sort((a, b) => depth(a) - depth(b) || Number(rootNamed(b)) - Number(rootNamed(a)) || a.name.localeCompare(b.name));
-    return candidates[0];
-  }
-  async function fromZip(source, options) {
-    const budget = new Budget(Math.max(options.budgetBytes ?? DEFAULT_BUDGET_BYTES, MAX_ZIP_BYTES));
-    const bytes = await fetchBytes(source.url, options, MAX_ZIP_BYTES, budget, "application/zip, application/octet-stream, */*");
-    if (!bytes) throw new FetchError("manifest-not-found", "HTTP 404", source.url, 404);
-    let entries2;
-    let manifestEntry;
-    try {
-      entries2 = await listZip(bytes);
-      manifestEntry = pickManifestEntry(entries2);
-    } catch (e) {
-      if (e instanceof FetchError) throw e;
-      throw new FetchError("bad-zip", e instanceof Error ? e.message : String(e), source.url);
-    }
-    const byLowerName = new Map([...entries2.values()].map((e) => [e.name.toLowerCase(), e]));
-    const dir = manifestEntry.name.includes("/") ? manifestEntry.name.replace(/\/[^/]*$/, "") : "";
-    const decoder = new TextDecoder("utf-8");
-    const readEntry = async (entry, maxBytes) => {
-      try {
-        return decoder.decode(await readZipEntry(bytes, entry, maxBytes));
-      } catch (e) {
-        throw new FetchError("bad-zip", e instanceof Error ? e.message : String(e), source.url);
-      }
-    };
-    const lookup = (path) => {
-      const clean = normalizePath(path);
-      if (!clean) return null;
-      for (const candidate of dir ? [`${dir}/${clean}`, clean] : [clean]) {
-        const entry = byLowerName.get(candidate.toLowerCase());
-        if (entry) return entry;
-      }
-      return null;
-    };
-    const read = async (path) => {
-      const entry = lookup(path);
-      return entry ? readEntry(entry, LIMITS.textFileBytes) : null;
-    };
-    const manifestUrl = `${source.url}!/${manifestEntry.name}`;
-    const manifest = parseJson(await readEntry(manifestEntry, LIMITS.textFileBytes), manifestUrl);
-    const normalized = await normalizeManifest(manifest, read);
-    return {
-      source,
-      ref: null,
-      commit: null,
-      manifest,
-      normalized,
-      manifestUrl,
-      browseUrl: source.url,
-      readme: options.readme === false ? null : await readme(async (name) => {
-        const entry = lookup(name);
-        return entry ? readEntry(entry, MAX_README_BYTES) : null;
-      }),
-      downloadedBytes: budget.used
-    };
-  }
-  async function fetchPackage(source, options) {
-    switch (source.kind) {
-      case "github-repo":
-        return fromGithub(source, options);
-      case "manifest-url":
-        return fromManifestUrl(source, options);
-      case "zip-url":
-        return fromZip(source, options);
-    }
-  }
-
-  // src/sha256.ts
-  var K = new Uint32Array([
-    1116352408,
-    1899447441,
-    3049323471,
-    3921009573,
-    961987163,
-    1508970993,
-    2453635748,
-    2870763221,
-    3624381080,
-    310598401,
-    607225278,
-    1426881987,
-    1925078388,
-    2162078206,
-    2614888103,
-    3248222580,
-    3835390401,
-    4022224774,
-    264347078,
-    604807628,
-    770255983,
-    1249150122,
-    1555081692,
-    1996064986,
-    2554220882,
-    2821834349,
-    2952996808,
-    3210313671,
-    3336571891,
-    3584528711,
-    113926993,
-    338241895,
-    666307205,
-    773529912,
-    1294757372,
-    1396182291,
-    1695183700,
-    1986661051,
-    2177026350,
-    2456956037,
-    2730485921,
-    2820302411,
-    3259730800,
-    3345764771,
-    3516065817,
-    3600352804,
-    4094571909,
-    275423344,
-    430227734,
-    506948616,
-    659060556,
-    883997877,
-    958139571,
-    1322822218,
-    1537002063,
-    1747873779,
-    1955562222,
-    2024104815,
-    2227730452,
-    2361852424,
-    2428436474,
-    2756734187,
-    3204031479,
-    3329325298
-  ]);
-  var rotr = (x, n) => x >>> n | x << 32 - n;
-  function sha256Bytes(data) {
-    const bitLength = data.byteLength * 8;
-    const paddedLength = Math.ceil((data.byteLength + 9) / 64) * 64;
-    const block = new Uint8Array(paddedLength);
-    block.set(data);
-    block[data.byteLength] = 128;
-    const view = new DataView(block.buffer);
-    view.setUint32(paddedLength - 8, Math.floor(bitLength / 4294967296));
-    view.setUint32(paddedLength - 4, bitLength >>> 0);
-    const h = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
-    const w = new Uint32Array(64);
-    for (let offset = 0; offset < paddedLength; offset += 64) {
-      for (let t = 0; t < 16; t++) w[t] = view.getUint32(offset + t * 4);
-      for (let t = 16; t < 64; t++) {
-        const w15 = w[t - 15], w2 = w[t - 2];
-        const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ w15 >>> 3;
-        const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ w2 >>> 10;
-        w[t] = w[t - 16] + s0 + w[t - 7] + s1 >>> 0;
-      }
-      let a = h[0], b = h[1], c = h[2], d = h[3];
-      let e = h[4], f = h[5], g = h[6], hh = h[7];
-      for (let t = 0; t < 64; t++) {
-        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-        const ch = e & f ^ ~e & g;
-        const temp1 = hh + S1 + ch + K[t] + w[t] >>> 0;
-        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-        const maj = a & b ^ a & c ^ b & c;
-        const temp2 = S0 + maj >>> 0;
-        hh = g;
-        g = f;
-        f = e;
-        e = d + temp1 >>> 0;
-        d = c;
-        c = b;
-        b = a;
-        a = temp1 + temp2 >>> 0;
-      }
-      h[0] = h[0] + a;
-      h[1] = h[1] + b;
-      h[2] = h[2] + c;
-      h[3] = h[3] + d;
-      h[4] = h[4] + e;
-      h[5] = h[5] + f;
-      h[6] = h[6] + g;
-      h[7] = h[7] + hh;
-    }
-    const out = new Uint8Array(32);
-    const outView = new DataView(out.buffer);
-    for (let i = 0; i < 8; i++) outView.setUint32(i * 4, h[i]);
-    return out;
-  }
-  var toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  function digestBackend() {
-    return typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function" ? "webcrypto" : "javascript";
-  }
-  async function digestHex(data, backend = digestBackend()) {
-    if (backend === "webcrypto") {
-      const copy = new Uint8Array(data.byteLength);
-      copy.set(data);
-      try {
-        return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", copy.buffer)));
-      } catch {
-      }
-    }
-    return toHex(sha256Bytes(data));
-  }
-
-  // src/hash.ts
-  var encoder = new TextEncoder();
-  async function sha256Hex(text) {
-    return digestHex(typeof text === "string" ? encoder.encode(text) : text);
-  }
-  function engineHashPayload(draft) {
-    const payload = draft.runtime === "server" ? ["server", "", "", draft.serverJs ?? ""] : ["client", draft.css ?? "", draft.js ?? "", ""];
-    const capabilities = draft.runtime === "server" ? [] : CAPABILITY_ORDER.filter((c) => draft.capabilities.includes(c));
-    if (capabilities.length > 0) payload.push(capabilities);
-    return JSON.stringify(payload);
-  }
-  async function engineContentHash(draft) {
-    return `sha256:${await sha256Hex(engineHashPayload(draft))}`;
-  }
-
-  // src/diff.ts
-  var CODE_ROLES = ["css", "js", "serverJs"];
-  var encoder2 = new TextEncoder();
-  var splitLines = (text) => text.split(/\r?\n/);
-  function lineDelta(before, after) {
-    const counts = /* @__PURE__ */ new Map();
-    for (const line of splitLines(before)) counts.set(line, (counts.get(line) ?? 0) + 1);
-    let added = 0;
-    for (const line of splitLines(after)) {
-      const n = counts.get(line) ?? 0;
-      if (n > 0) counts.set(line, n - 1);
-      else added++;
-    }
-    let removed = 0;
-    for (const n of counts.values()) removed += n;
-    return { added, removed };
-  }
-  async function side(text) {
-    if (text === null) return null;
-    return { bytes: encoder2.encode(text).byteLength, lines: text ? splitLines(text).length : 0, sha256: await sha256Hex(text) };
-  }
-  async function compareCode(before, after) {
-    const changes = [];
-    for (const role of CODE_ROLES) {
-      const a = before?.[role] ?? null;
-      const b = after[role] ?? null;
-      if (a === null && b === null) continue;
-      const [beforeSide, afterSide] = await Promise.all([side(a), side(b)]);
-      const changed = (beforeSide?.sha256 ?? null) !== (afterSide?.sha256 ?? null);
-      const delta = changed ? lineDelta(a ?? "", b ?? "") : { added: 0, removed: 0 };
-      changes.push({ role, before: beforeSide, after: afterSide, ...delta, changed });
-    }
-    return changes;
-  }
-
-  // src/version.ts
-  function numericParts(value) {
-    if (!value) return null;
-    const normalized = value.trim().replace(/^v/i, "");
-    if (!/^\d+(?:\.\d+)*$/.test(normalized)) return null;
-    return normalized.split(".").map((part) => Number.parseInt(part, 10));
-  }
-  function compareVersions(left, right) {
-    const a = numericParts(left), b = numericParts(right);
-    if (!a || !b) return null;
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const delta = (a[i] ?? 0) - (b[i] ?? 0);
-      if (delta !== 0) return delta < 0 ? -1 : 1;
-    }
-    return 0;
-  }
-  function updateState(installed, latest) {
-    const cmp = compareVersions(latest.version, installed.version);
-    if (cmp === 1) return "update";
-    if (cmp === -1) return "older";
-    if (installed.hash && latest.hash) return installed.hash === latest.hash ? "up-to-date" : "changed";
-    if (cmp === 0) return "up-to-date";
-    return "unknown";
-  }
-
-  // src/installer.ts
-  async function autoApprove(previous, before, after, draft, deps) {
-    if (!previous?.autoApprove && !deps.approveNow) return { approved: false, notApproved: "off", approveError: null };
-    if (!before.enabled) return { approved: false, notApproved: "was-off", approveError: null };
-    const grew = draft.capabilities.filter((c) => !before.capabilities.includes(c));
-    if (grew.length) {
-      await log(deps, { action: "approve", result: "refused", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(after), detail: `capabilities grew: ${grew.join(", ")}; manual approval required` });
-      return { approved: false, notApproved: "capabilities-grew", approveError: null };
-    }
-    try {
-      const approved = await deps.client.approve(after.id, after.contentHash, draft.capabilities.includes(FULL_PAGE_ACCESS));
-      await log(deps, { action: "approve", result: "ok", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(approved), detail: previous?.autoApprove ? "auto re-approval (user opt-in)" : "kept on (bulk update, user choice)" });
-      return { approved: approved.enabled && approved.approvedHash === after.contentHash, notApproved: null, approveError: null };
-    } catch (e) {
-      await log(deps, { action: "approve", result: "failed", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(after), detail: e instanceof Error ? e.message : String(e) });
-      return { approved: false, notApproved: "failed", approveError: e instanceof Error ? e.message : String(e) };
-    }
-  }
-  var NO_APPROVAL = { approved: false, notApproved: null, approveError: null };
-  var InstallError = class extends Error {
-    constructor(problem, message) {
-      super(message);
-      this.problem = problem;
-      this.name = "InstallError";
-    }
-    problem;
-  };
-  var sameSource = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  var sideOf = (x, hash) => x ? { version: x.version, hash: hash ?? x.contentHash ?? null, capabilities: [...x.capabilities] } : null;
-  async function log(deps, entry) {
-    try {
-      await deps.audit?.record(entry);
-    } catch {
-    }
-  }
-  var sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
-  var nowOf = (deps) => (deps.now ?? (() => /* @__PURE__ */ new Date()))();
-  async function digest(draft, files) {
-    const textFor = (role) => (role === "js" ? draft.js : role === "css" ? draft.css : draft.serverJs) ?? "";
-    const byRole = /* @__PURE__ */ new Map();
-    for (const file of files) {
-      if (!byRole.has(file.role)) byRole.set(file.role, await sha256Hex(textFor(file.role)));
-    }
-    return files.map((file) => ({ ...file, sha256: byRole.get(file.role) ?? "" }));
-  }
-  async function engineView(client, draft, contentHash, tracked, extensionId) {
-    let list;
-    try {
-      list = await client.list();
-    } catch (e) {
-      return { view: null, error: e instanceof EngineApiError ? e : new EngineApiError("http", 0, String(e)) };
-    }
-    const record = (extensionId ? list.find((x) => x.id === extensionId) : null) ?? (tracked ? list.find((x) => x.id === tracked.extensionId) : null) ?? list.find((x) => sameName(x.name, draft.name)) ?? null;
-    if (!record) return { view: null, error: null };
-    return {
-      error: null,
-      view: {
-        record,
-        sameCode: record.contentHash === contentHash,
-        editedInMarinara: tracked !== null && tracked.extensionId === record.id && tracked.installedHash !== record.contentHash,
-        runtimeDiffers: record.runtime !== draft.runtime,
-        nameDiffers: !sameName(record.name, draft.name),
-        capabilitiesAdded: draft.capabilities.filter((c) => !record.capabilities.includes(c)),
-        capabilitiesRemoved: record.capabilities.filter((c) => !draft.capabilities.includes(c)),
-        changes: await compareCode(record, draft)
-      }
-    };
-  }
-  async function prepare(input, deps, options = {}) {
-    const source = parseSourceUrl(input);
-    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest, readme: options.readme, pinCommit: true });
-    const draft = pkg.normalized.draft;
-    const contentHash = await engineContentHash(draft);
-    const records = await deps.store.load();
-    const tracked = (options.extensionId ? records.find((r) => r.extensionId === options.extensionId) : null) ?? records.find((r) => sameSource(r.source, source)) ?? records.find((r) => sameName(r.name, draft.name)) ?? null;
-    const { view, error } = await engineView(deps.client, draft, contentHash, tracked, options.extensionId ?? null);
-    return {
-      input: input.trim(),
-      source,
-      pkg,
-      draft,
-      contentHash,
-      files: await digest(draft, pkg.normalized.files),
-      fullPageAccess: draft.capabilities.includes(FULL_PAGE_ACCESS),
-      tracked,
-      engine: view,
-      engineListError: error
-    };
-  }
-  function recordFrom(prepared, extension, previous, now, installedHash) {
-    const iso = now.toISOString();
-    const state = installedHash === prepared.contentHash ? "up-to-date" : updateState({ version: extension.version, hash: installedHash }, { version: prepared.draft.version, hash: prepared.contentHash });
-    return {
-      id: previous?.id ?? newRecordId(),
-      input: prepared.input,
-      source: prepared.source,
-      ref: prepared.pkg.ref,
-      name: extension.name,
-      extensionId: extension.id,
-      installedVersion: extension.version ?? null,
-      installedHash,
-      installedAt: iso,
-      lastCheckedAt: iso,
-      latest: { version: prepared.draft.version, hash: prepared.contentHash, state, checkedAt: iso },
-      lastError: null,
-      autoApprove: previous?.autoApprove === true,
-      autoUpdate: previous?.autoUpdate === true
-    };
-  }
-  async function verifyAnswer(prepared, extension, codeChanged) {
-    if (extension.contentHash !== prepared.contentHash) {
-      throw new InstallError("unexpected-result", `Marinara stored ${extension.contentHash}, expected ${prepared.contentHash}`);
-    }
-    if (codeChanged && extension.enabled) {
-      throw new InstallError("unexpected-result", "Marinara reports the extension as still enabled after a code change");
-    }
-  }
-  async function install(prepared, deps, mode) {
-    const action = mode.kind === "create" ? "install" : mode.kind;
-    const base = {
-      action,
-      extensionId: mode.kind === "create" ? null : mode.extensionId,
-      name: prepared.draft.name,
-      source: prepared.input,
-      ref: prepared.pkg.ref,
-      from: sideOf(prepared.engine?.record ?? null),
-      to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash)
-    };
-    try {
-      const result = await installUnlogged(prepared, deps, mode);
-      if (result.self) return result;
-      await log(deps, { ...base, action: result.mode.kind === "create" ? "install" : result.mode.kind, extensionId: result.extension.id, result: "ok", detail: null, to: sideOf(result.extension) });
-      return result;
-    } catch (e) {
-      const refused = e instanceof InstallError;
-      await log(deps, { ...base, result: refused ? "refused" : "failed", detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
-      throw e;
-    }
-  }
-  async function installUnlogged(prepared, deps, mode) {
-    const now = nowOf(deps);
-    const previous = prepared.tracked ?? (mode.kind !== "create" ? (await deps.store.load()).find((r) => r.extensionId === mode.extensionId) ?? null : null);
-    if (mode.kind === "create") {
-      const extension2 = await deps.client.create(prepared.draft);
-      await verifyAnswer(prepared, extension2, true);
-      const record2 = recordFrom(prepared, extension2, previous, now, extension2.contentHash);
-      await deps.store.upsert(record2);
-      return { record: record2, extension: extension2, mode, codeChanged: true, self: false, ...NO_APPROVAL };
-    }
-    const current = (await deps.client.list()).find((x) => x.id === mode.extensionId) ?? null;
-    if (!current) throw new EngineApiError("not-found", 404, `Marinara has no extension ${mode.extensionId}`);
-    if (mode.kind === "link") {
-      const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
-      await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode, codeChanged: false, self: false, ...NO_APPROVAL };
-    }
-    if (prepared.engine && prepared.engine.record.id === current.id && prepared.engine.record.contentHash !== current.contentHash) {
-      throw new InstallError("record-changed", `the extension's code changed since the preview (${prepared.engine.record.contentHash} → ${current.contentHash})`);
-    }
-    if (current.runtime !== prepared.draft.runtime) {
-      throw new InstallError("runtime-changed", `${current.runtime} → ${prepared.draft.runtime}`);
-    }
-    if (current.contentHash === prepared.contentHash) {
-      const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
-      await deps.store.upsert(record2);
-      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false, self: false, ...NO_APPROVAL };
-    }
-    const isSelf = deps.selfId != null && current.id === deps.selfId;
-    if (isSelf) {
-      const expected = recordFrom(prepared, { ...current, version: prepared.draft.version, contentHash: prepared.contentHash }, previous, now, prepared.contentHash);
-      await deps.store.upsert(expected);
-      await log(deps, {
-        action: "update",
-        result: "ok",
-        extensionId: current.id,
-        name: prepared.draft.name,
-        source: prepared.input,
-        ref: prepared.pkg.ref,
-        from: sideOf(current),
-        to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash),
-        detail: "self-update: recorded before the PATCH; Fetchy is switched off until the new code is approved"
-      });
-      let extension2;
-      try {
-        extension2 = await deps.client.update(current.id, prepared.draft);
-      } catch (e) {
-        if (previous) await deps.store.upsert(previous);
-        else await deps.store.remove(expected.id);
-        await log(deps, { action: "update", result: "failed", extensionId: current.id, name: prepared.draft.name, source: prepared.input, ref: prepared.pkg.ref, from: sideOf(current), to: null, detail: e instanceof Error ? e.message : String(e) });
-        throw e;
-      }
-      await verifyAnswer(prepared, extension2, true);
-      const approval2 = await autoApprove(previous, current, extension2, prepared.draft, { client: deps.client, approveNow: deps.approveNow });
-      return { record: expected, extension: extension2, mode, codeChanged: true, self: true, ...approval2 };
-    }
-    const extension = await deps.client.update(current.id, prepared.draft);
-    await verifyAnswer(prepared, extension, true);
-    const approval = await autoApprove(previous, current, extension, prepared.draft, deps);
-    const record = { ...recordFrom(prepared, extension, previous, now, extension.contentHash), autoApprove: previous?.autoApprove === true, autoUpdate: previous?.autoUpdate === true };
-    await deps.store.upsert(record);
-    return { record, extension, mode, codeChanged: true, self: false, ...approval };
-  }
-  function pinned(record) {
-    return record.source.kind === "github-repo" && record.ref && !record.source.ref ? { ...record.source, ref: record.ref } : record.source;
-  }
-  async function checkSource(record, deps) {
-    const now = nowOf(deps).toISOString();
-    try {
-      const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false });
-      const hash = await engineContentHash(pkg.normalized.draft);
-      const state = updateState(
-        { version: record.installedVersion, hash: record.installedHash },
-        { version: pkg.normalized.draft.version, hash }
-      );
-      if (state !== "up-to-date" && (record.latest?.hash !== hash || record.latest?.state !== state)) {
-        await log(deps, {
-          action: "check",
-          result: "ok",
-          extensionId: record.extensionId,
-          name: record.name,
-          source: record.input,
-          ref: record.ref,
-          from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] },
-          to: sideOf({ version: pkg.normalized.draft.version, capabilities: pkg.normalized.draft.capabilities }, hash),
-          detail: state
-        });
-      }
-      return { ...record, lastCheckedAt: now, lastError: null, latest: { version: pkg.normalized.draft.version, hash, state, checkedAt: now } };
-    } catch (e) {
-      return { ...record, lastCheckedAt: now, lastError: e instanceof Error ? e.message : String(e) };
-    }
-  }
-  function checkedLongAgo(record, now, maxAgeMs) {
-    const at = record.lastCheckedAt ? Date.parse(record.lastCheckedAt) : NaN;
-    return !Number.isFinite(at) || at > now.getTime() || now.getTime() - at > maxAgeMs;
-  }
-  async function checkAll(deps, options = {}) {
-    const records = await deps.store.load();
-    const checked = [...records];
-    const todo = records.map((r, index) => ({ r, index })).filter(({ r }) => options.due?.(r) ?? true);
-    let next = 0, done = 0;
-    const worker = async () => {
-      while (next < todo.length) {
-        const { r, index } = todo[next++];
-        const result = await checkSource(r, deps);
-        checked[index] = result;
-        options.onProgress?.(++done, todo.length, result);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 3, todo.length)) }, worker));
-    if (todo.length) await deps.store.save(checked);
-    return checked;
-  }
-  async function updateSource(record, deps) {
-    const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false, pinCommit: true });
-    const draft = pkg.normalized.draft;
-    const contentHash = await engineContentHash(draft);
-    const { view, error } = await engineView(deps.client, draft, contentHash, record, record.extensionId);
-    const prepared = {
-      input: record.input,
-      source: record.source,
-      pkg,
-      draft,
-      contentHash,
-      files: await digest(draft, pkg.normalized.files),
-      fullPageAccess: draft.capabilities.includes(FULL_PAGE_ACCESS),
-      tracked: record,
-      engine: view,
-      engineListError: error
-    };
-    return install(prepared, deps, { kind: "update", extensionId: record.extensionId });
-  }
-  async function updateAll(deps, options = {}) {
-    const due = (await deps.store.load()).filter((r) => r.latest && (r.latest.state === "update" || r.latest.state === "changed" || r.latest.state === "older"));
-    const results = [];
-    let done = 0;
-    for (const record of due) {
-      let result;
-      try {
-        result = await updateSource(record, { ...deps, approveNow: options.keepEnabled === true });
-      } catch (e) {
-        result = e instanceof Error ? e : new Error(String(e));
-      }
-      results.push({ record, result });
-      options.onProgress?.(++done, due.length, record, result);
-      if (!(result instanceof Error) && result.self) break;
-    }
-    return results;
-  }
-  async function rollbackSource(record, contentHash, deps) {
-    let extension;
-    try {
-      extension = await deps.client.rollback(record.extensionId, contentHash);
-    } catch (e) {
-      await log(deps, { action: "rollback", result: "failed", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: { version: null, hash: contentHash, capabilities: [] }, detail: e instanceof Error ? e.message : String(e) });
-      throw e;
-    }
-    await log(deps, { action: "rollback", result: "ok", extensionId: extension.id, name: extension.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(extension), detail: null });
-    const now = nowOf(deps).toISOString();
-    const latest = record.latest ? { ...record.latest, state: updateState({ version: extension.version, hash: extension.contentHash }, { version: record.latest.version, hash: record.latest.hash }) } : null;
-    const updated = { ...record, installedVersion: extension.version, installedHash: extension.contentHash, installedAt: now, latest };
-    await deps.store.upsert(updated);
-    return { record: updated, extension };
-  }
-  async function forgetSource(record, deps, deleteFromEngine) {
-    const entry = { action: deleteFromEngine ? "delete" : "forget", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: null };
-    if (deleteFromEngine) {
-      try {
-        await deps.client.remove(record.extensionId);
-      } catch (e) {
-        if (!(e instanceof EngineApiError && e.code === "not-found")) {
-          await log(deps, { ...entry, result: "failed", detail: e instanceof Error ? e.message : String(e) });
-          throw e;
-        }
-      }
-    }
-    await deps.store.remove(record.id);
-    await log(deps, { ...entry, result: "ok", detail: null });
-  }
-  async function reconcile(deps) {
-    const records = await deps.store.load();
-    if (records.length === 0) return [];
-    const list = await deps.client.list();
-    const byId = new Map(list.map((x) => [x.id, x]));
-    const now = nowOf(deps).toISOString();
-    const changed = [];
-    const next = records.map((record) => {
-      const engine = byId.get(record.extensionId);
-      if (!engine) {
-        if (record.lastError?.startsWith("missing:")) return record;
-        const marked = { ...record, lastError: `missing: Marinara no longer has extension ${record.extensionId}` };
-        changed.push(marked);
-        return marked;
-      }
-      if (engine.contentHash !== record.installedHash && record.latest && record.latest.hash === engine.contentHash) {
-        const completed = { ...record, installedVersion: engine.version, installedHash: engine.contentHash, installedAt: engine.updatedAt || now, latest: { ...record.latest, state: "up-to-date" }, lastError: null };
-        changed.push(completed);
-        void log(deps, { action: "update", result: "ok", extensionId: engine.id, name: engine.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(engine), detail: "completed after an interrupted update (reconciled on open)" });
-        return completed;
-      }
-      return record;
-    });
-    if (changed.length) await deps.store.save(next);
-    return changed;
-  }
-  async function setAutoApprove(record, value, deps) {
-    const updated = { ...record, autoApprove: value };
-    await deps.store.upsert(updated);
-    await log(deps, { action: "approve", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "auto re-approval switched on by the user" : "auto re-approval switched off" });
-    return updated;
-  }
-  async function disableExtension(extension, deps) {
-    try {
-      const result = await deps.client.disable(extension.id);
-      await log(deps, { action: "disable", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: sideOf(result), detail: null });
-      return result;
-    } catch (e) {
-      await log(deps, { action: "disable", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
-      throw e;
-    }
-  }
-  async function deleteExtension(extension, deps) {
-    const record = (await deps.store.load()).find((r) => r.extensionId === extension.id);
-    if (record) return forgetSource(record, deps, true);
-    try {
-      await deps.client.remove(extension.id);
-    } catch (e) {
-      if (!(e instanceof EngineApiError && e.code === "not-found")) {
-        await log(deps, { action: "delete", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
-        throw e;
-      }
-    }
-    await log(deps, { action: "delete", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: null });
-  }
-  async function overview(deps) {
-    const [list, records] = await Promise.all([deps.client.list(), deps.store.load()]);
-    const byExtension = new Map(records.map((r) => [r.extensionId, r]));
-    const rows = list.filter((x) => x.source !== "professor_mari").map((extension) => ({ extension, record: byExtension.get(extension.id) ?? null }));
-    const known = new Set(list.map((x) => x.id));
-    for (const record of records) if (!known.has(record.extensionId)) rows.push({ extension: null, record });
-    return rows;
-  }
-  function exportSources(records) {
-    return JSON.stringify({ kind: "me-fetchy.sources", version: 1, exportedAt: (/* @__PURE__ */ new Date()).toISOString(), sources: records }, null, 2);
-  }
-  async function importSources(json, store) {
-    let parsed;
-    try {
-      parsed = JSON.parse(json);
-    } catch {
-      throw new SyntaxError("not JSON");
-    }
-    const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray(parsed.sources) ? parsed.sources : null;
-    if (!list) throw new SyntaxError("not an exported source list");
-    const incoming = list.map(parseRecord).filter((r) => r !== null);
-    const merged = mergeImported(await store.load(), incoming);
-    if (merged.added) await store.save(merged.records);
-    return { imported: merged.added, kept: merged.kept, different: merged.different, ignored: list.length - incoming.length };
-  }
-  async function setAutoUpdate(record, value, deps) {
-    const updated = { ...record, autoUpdate: value };
-    await deps.store.upsert(updated);
-    await log(deps, { action: "check", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "automatic updates switched on by the user" : "automatic updates switched off" });
-    return updated;
-  }
-  var hasUpdate = (r) => !!r.latest && (r.latest.state === "update" || r.latest.state === "changed");
-  var editedSinceInstall = (record, extension) => extension.contentHash !== record.installedHash && extension.contentHash !== record.latest?.hash;
-  async function refuseEdited(record, extension, deps) {
-    const error = new InstallError("edited", `Marinara holds ${extension.contentHash}; Fetchy last installed ${record.installedHash}`);
-    await log(deps, {
-      action: "update",
-      result: "refused",
-      extensionId: record.extensionId,
-      name: record.name,
-      source: record.input,
-      ref: record.ref,
-      from: sideOf(extension),
-      to: null,
-      detail: `automatic update skipped: ${error.message}`
-    });
-    return error;
-  }
-  async function autoUpdate(deps, options) {
-    const out = [];
-    let engine = null;
-    for (const first of await deps.store.load()) {
-      if (!first.autoUpdate || first.extensionId === deps.selfId) continue;
-      let record = first;
-      if (options.check) {
-        record = await checkSource(first, deps);
-        await deps.store.upsert(record);
-      }
-      if (!hasUpdate(record)) continue;
-      try {
-        engine ??= new Map((await deps.client.list()).map((x) => [x.id, x]));
-        const current = engine.get(record.extensionId);
-        if (current && editedSinceInstall(record, current)) throw await refuseEdited(record, current, deps);
-        out.push({ record, result: await updateSource(record, deps) });
-      } catch (e) {
-        out.push({ record, result: e instanceof Error ? e : new Error(String(e)) });
-      }
-    }
-    return out;
-  }
-
-  // src/errors.ts
-  function describeError(error, t, context = {}) {
-    if (error instanceof SourceUrlError) {
-      return t(`error.url.${error.reason}`, { message: error.message });
-    }
-    if (error instanceof FetchError) {
-      return t(`error.fetch.${error.code}`, { url: error.url, status: error.status, message: error.message });
-    }
-    if (error instanceof ManifestError) {
-      const p = error.problem;
-      const params = {};
-      for (const [key, value] of Object.entries(p)) {
-        if (key === "code") continue;
-        params[key] = Array.isArray(value) ? value.filter(Boolean).join(", ") : String(value);
-      }
-      return t(`error.manifest.${p.code}`, params);
-    }
-    if (error instanceof InstallError) {
-      return t(`error.install.${error.problem}`, { message: error.message });
-    }
-    if (error instanceof EngineApiError) {
-      return t(`error.engine.${error.code}`, { message: error.message, status: error.status, name: context.name ?? "" });
-    }
-    return t("error.unknown", { message: error instanceof Error ? error.message : String(error) });
-  }
 
   // src/i18n.ts
   var en = {
@@ -2258,6 +1076,1229 @@
     };
   }
 
+  // src/sha256.ts
+  var K = new Uint32Array([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  var rotr = (x, n) => x >>> n | x << 32 - n;
+  function sha256Bytes(data) {
+    const bitLength = data.byteLength * 8;
+    const paddedLength = Math.ceil((data.byteLength + 9) / 64) * 64;
+    const block = new Uint8Array(paddedLength);
+    block.set(data);
+    block[data.byteLength] = 128;
+    const view = new DataView(block.buffer);
+    view.setUint32(paddedLength - 8, Math.floor(bitLength / 4294967296));
+    view.setUint32(paddedLength - 4, bitLength >>> 0);
+    const h = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
+    const w = new Uint32Array(64);
+    for (let offset = 0; offset < paddedLength; offset += 64) {
+      for (let t = 0; t < 16; t++) w[t] = view.getUint32(offset + t * 4);
+      for (let t = 16; t < 64; t++) {
+        const w15 = w[t - 15], w2 = w[t - 2];
+        const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ w15 >>> 3;
+        const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ w2 >>> 10;
+        w[t] = w[t - 16] + s0 + w[t - 7] + s1 >>> 0;
+      }
+      let a = h[0], b = h[1], c = h[2], d = h[3];
+      let e = h[4], f = h[5], g = h[6], hh = h[7];
+      for (let t = 0; t < 64; t++) {
+        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const ch = e & f ^ ~e & g;
+        const temp1 = hh + S1 + ch + K[t] + w[t] >>> 0;
+        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const maj = a & b ^ a & c ^ b & c;
+        const temp2 = S0 + maj >>> 0;
+        hh = g;
+        g = f;
+        f = e;
+        e = d + temp1 >>> 0;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2 >>> 0;
+      }
+      h[0] = h[0] + a;
+      h[1] = h[1] + b;
+      h[2] = h[2] + c;
+      h[3] = h[3] + d;
+      h[4] = h[4] + e;
+      h[5] = h[5] + f;
+      h[6] = h[6] + g;
+      h[7] = h[7] + hh;
+    }
+    const out = new Uint8Array(32);
+    const outView = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) outView.setUint32(i * 4, h[i]);
+    return out;
+  }
+  var toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  function digestBackend() {
+    return typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function" ? "webcrypto" : "javascript";
+  }
+  async function digestHex(data, backend = digestBackend()) {
+    if (backend === "webcrypto") {
+      const copy = new Uint8Array(data.byteLength);
+      copy.set(data);
+      try {
+        return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", copy.buffer)));
+      } catch {
+      }
+    }
+    return toHex(sha256Bytes(data));
+  }
+
+  // src/hash.ts
+  var encoder = new TextEncoder();
+  async function sha256Hex(text) {
+    return digestHex(typeof text === "string" ? encoder.encode(text) : text);
+  }
+  function engineHashPayload(draft) {
+    const payload = draft.runtime === "server" ? ["server", "", "", draft.serverJs ?? ""] : ["client", draft.css ?? "", draft.js ?? "", ""];
+    const capabilities = draft.runtime === "server" ? [] : CAPABILITY_ORDER.filter((c) => draft.capabilities.includes(c));
+    if (capabilities.length > 0) payload.push(capabilities);
+    return JSON.stringify(payload);
+  }
+  async function engineContentHash(draft) {
+    return `sha256:${await sha256Hex(engineHashPayload(draft))}`;
+  }
+
+  // src/diff.ts
+  var CODE_ROLES = ["css", "js", "serverJs"];
+  var encoder2 = new TextEncoder();
+  var splitLines = (text) => text.split(/\r?\n/);
+  function lineDelta(before, after) {
+    const counts = /* @__PURE__ */ new Map();
+    for (const line of splitLines(before)) counts.set(line, (counts.get(line) ?? 0) + 1);
+    let added = 0;
+    for (const line of splitLines(after)) {
+      const n = counts.get(line) ?? 0;
+      if (n > 0) counts.set(line, n - 1);
+      else added++;
+    }
+    let removed = 0;
+    for (const n of counts.values()) removed += n;
+    return { added, removed };
+  }
+  async function side(text) {
+    if (text === null) return null;
+    return { bytes: encoder2.encode(text).byteLength, lines: text ? splitLines(text).length : 0, sha256: await sha256Hex(text) };
+  }
+  async function compareCode(before, after) {
+    const changes = [];
+    for (const role of CODE_ROLES) {
+      const a = before?.[role] ?? null;
+      const b = after[role] ?? null;
+      if (a === null && b === null) continue;
+      const [beforeSide, afterSide] = await Promise.all([side(a), side(b)]);
+      const changed = (beforeSide?.sha256 ?? null) !== (afterSide?.sha256 ?? null);
+      const delta = changed ? lineDelta(a ?? "", b ?? "") : { added: 0, removed: 0 };
+      changes.push({ role, before: beforeSide, after: afterSide, ...delta, changed });
+    }
+    return changes;
+  }
+
+  // src/github.ts
+  var SourceUrlError = class extends Error {
+    constructor(reason, message2) {
+      super(message2);
+      this.reason = reason;
+      this.name = "SourceUrlError";
+    }
+    reason;
+  };
+  var MANIFEST_NAMES = ["manifest.json", "marinara-extension.json", "marinara-extensions.json", "marinara-personal-extensions.json"];
+  var MANIFEST_FILENAMES = MANIFEST_NAMES;
+  var SEGMENT = /^[A-Za-z0-9_.-]+$/;
+  function cleanPath(path) {
+    return path.split("/").map((s) => s.trim()).filter((s) => s && s !== "." && s !== "..").join("/");
+  }
+  function stripManifestFilename(path) {
+    const parts = cleanPath(path).split("/").filter(Boolean);
+    const last = parts[parts.length - 1]?.toLowerCase();
+    if (last && MANIFEST_NAMES.includes(last)) parts.pop();
+    return parts.join("/");
+  }
+  function splitRef(text) {
+    const at = text.lastIndexOf("@");
+    if (at <= 0) return { body: text, ref: null };
+    const ref = text.slice(at + 1).trim();
+    return ref ? { body: text.slice(0, at), ref } : { body: text, ref: null };
+  }
+  function repoSource(owner, repo, ref, path) {
+    if (!SEGMENT.test(owner) || !SEGMENT.test(repo)) {
+      throw new SourceUrlError("bad-github-path", `Not a GitHub owner/repo: ${owner}/${repo}`);
+    }
+    return { kind: "github-repo", owner, repo: repo.replace(/\.git$/i, ""), ref, path: stripManifestFilename(path) };
+  }
+  function fileSource(url) {
+    const lower = url.pathname.toLowerCase();
+    if (lower.endsWith(".zip")) return { kind: "zip-url", url: url.href };
+    if (lower.endsWith(".json")) return { kind: "manifest-url", url: url.href };
+    return null;
+  }
+  function parseSourceUrl(input) {
+    const text = input.trim();
+    if (!text) throw new SourceUrlError("empty", "Enter a URL");
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return shorthandSource(text);
+    let url;
+    try {
+      url = new URL(text);
+    } catch {
+      throw new SourceUrlError("unsupported", `Not a valid URL: ${text}`);
+    }
+    if (url.protocol !== "https:") throw new SourceUrlError("not-https", "Only https:// URLs are supported");
+    const host = url.hostname.toLowerCase();
+    if (host === "github.com" || host === "www.github.com") return githubPageSource(url, text);
+    if (host === "raw.githubusercontent.com") return rawSource(url);
+    const file = fileSource(url);
+    if (file) return file;
+    throw new SourceUrlError("unsupported", `Unsupported URL (use a GitHub repository, a manifest.json URL or a .zip URL): ${text}`);
+  }
+  function shorthandSource(text) {
+    const { body, ref } = splitRef(text);
+    const parts = cleanPath(body).split("/").filter(Boolean);
+    if (parts.length < 2) throw new SourceUrlError("unsupported", `Not a URL or owner/repo: ${text}`);
+    const [owner, repo, ...rest] = parts;
+    return repoSource(owner, repo, ref, rest.join("/"));
+  }
+  function githubPageSource(url, text) {
+    const { body, ref: atRef } = splitRef(url.pathname);
+    const parts = cleanPath(body).split("/").filter(Boolean);
+    if (parts.length < 2) throw new SourceUrlError("bad-github-path", "A GitHub URL needs /owner/repo");
+    const [owner, repo, mode, ref, ...rest] = parts;
+    if (mode === "tree" || mode === "blob" || mode === "raw") {
+      if (!ref) throw new SourceUrlError("bad-github-path", `A /${mode}/ URL needs a branch`);
+      return repoSource(owner, repo, ref, rest.join("/"));
+    }
+    if (mode) throw new SourceUrlError("bad-github-path", `Unsupported GitHub URL (use the repository or a /tree/<branch>/ folder): ${text}`);
+    return repoSource(owner, repo, atRef, "");
+  }
+  function rawSource(url) {
+    const parts = cleanPath(url.pathname).split("/").filter(Boolean);
+    if (parts.length < 3) throw new SourceUrlError("bad-github-path", "A raw URL needs /owner/repo/branch/…");
+    const [owner, repo, ...rest] = parts;
+    let ref;
+    if (rest[0] === "refs" && (rest[1] === "heads" || rest[1] === "tags") && rest[2]) {
+      ref = rest.splice(0, 3).join("/");
+    } else {
+      ref = rest.shift();
+    }
+    const file = fileSource(url);
+    if (file) return file;
+    return repoSource(owner, repo, ref, rest.join("/"));
+  }
+  function rawFileUrl(owner, repo, ref, path) {
+    const encodedPath = cleanPath(path).split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
+    return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodedRef}/${encodedPath}`;
+  }
+  function directoryOf(fileUrl) {
+    const url = new URL(fileUrl);
+    url.search = "";
+    url.hash = "";
+    url.pathname = url.pathname.replace(/[^/]*$/, "");
+    return url.href;
+  }
+  function browseUrl(source, ref = null) {
+    if (source.kind !== "github-repo") return source.url;
+    const branch = ref ?? source.ref;
+    const base = `https://github.com/${source.owner}/${source.repo}`;
+    if (!branch) return base;
+    return source.path ? `${base}/tree/${branch}/${source.path}` : `${base}/tree/${branch}`;
+  }
+  function describeSource(source) {
+    if (source.kind !== "github-repo") return source.url;
+    const at = source.ref ? `@${source.ref}` : "";
+    return source.path ? `${source.owner}/${source.repo}/${source.path}${at}` : `${source.owner}/${source.repo}${at}`;
+  }
+  var normalizePath = cleanPath;
+
+  // src/zip.ts
+  var ZipError = class extends Error {
+    constructor(message2) {
+      super(`zip: ${message2}`);
+      this.name = "ZipError";
+    }
+  };
+  var fail = (why) => {
+    throw new ZipError(why);
+  };
+  var MAX_ZIP_BYTES = 32 * 1024 * 1024;
+  var MAX_ENTRIES = 8192;
+  var EOCD = 101010256;
+  var CENTRAL = 33639248;
+  var LOCAL = 67324752;
+  async function listZip(bytes) {
+    if (bytes.byteLength > MAX_ZIP_BYTES) fail(`archive is larger than ${MAX_ZIP_BYTES} bytes`);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let eocd = -1;
+    for (let p2 = bytes.byteLength - 22; p2 >= Math.max(0, bytes.byteLength - 22 - 65535); p2--) {
+      if (view.getUint32(p2, true) === EOCD) {
+        eocd = p2;
+        break;
+      }
+    }
+    if (eocd < 0) fail("not a zip file");
+    const count = view.getUint16(eocd + 10, true);
+    const dirSize = view.getUint32(eocd + 12, true);
+    const dirOffset = view.getUint32(eocd + 16, true);
+    if (count > MAX_ENTRIES) fail("too many entries");
+    if (dirOffset + dirSize > bytes.byteLength) fail("central directory out of range");
+    const names2 = new TextDecoder();
+    const entries2 = /* @__PURE__ */ new Map();
+    let p = dirOffset;
+    for (let i = 0; i < count; i++) {
+      if (p + 46 > bytes.byteLength || view.getUint32(p, true) !== CENTRAL) fail("bad central directory");
+      const method = view.getUint16(p + 10, true);
+      const crc = view.getUint32(p + 16, true);
+      const compressed = view.getUint32(p + 20, true);
+      const size = view.getUint32(p + 24, true);
+      const nameLen = view.getUint16(p + 28, true);
+      const extraLen = view.getUint16(p + 30, true);
+      const commentLen = view.getUint16(p + 32, true);
+      const offset = view.getUint32(p + 42, true);
+      if (p + 46 + nameLen > bytes.byteLength) fail("bad central directory");
+      const name = names2.decode(bytes.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/").replace(/^\/+/, "");
+      if (offset + 30 + compressed > bytes.byteLength) fail(`${name} lies past the end of the file`);
+      if (name && !name.endsWith("/")) {
+        if (entries2.has(name)) fail(`duplicate entry ${name}`);
+        if (/^(\.\.?)(\/|$)|\/\.\.(\/|$)/.test(name)) fail(`unsafe entry name ${name}`);
+        entries2.set(name, { name, method, compressed, size, crc, offset });
+      }
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries2;
+  }
+  async function readZipEntry(bytes, entry, maxBytes) {
+    if (entry.size > maxBytes) fail(`${entry.name} is too large (${entry.size} bytes)`);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(entry.offset, true) !== LOCAL) fail(`bad local header for ${entry.name}`);
+    const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
+    if (start + entry.compressed > bytes.byteLength) fail(`${entry.name} lies past the end of the file`);
+    const data = bytes.subarray(start, start + entry.compressed);
+    let out;
+    if (entry.method === 0) {
+      if (entry.compressed !== entry.size) fail(`${entry.name}: stored size mismatch`);
+      out = data.slice();
+    } else if (entry.method === 8) {
+      out = await inflate(data, entry);
+    } else {
+      return fail(`unsupported compression ${entry.method} for ${entry.name}`);
+    }
+    if (crc32(out) !== entry.crc) fail(`${entry.name} is corrupt (CRC mismatch)`);
+    return out;
+  }
+  async function inflate(data, entry) {
+    const out = new Uint8Array(entry.size);
+    const copy = new Uint8Array(data.byteLength);
+    copy.set(data);
+    const stream = new Blob([copy]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    const reader = stream.getReader();
+    let n = 0;
+    try {
+      for (; ; ) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (n + value.length > out.length) fail(`${entry.name} inflates past its stated size`);
+        out.set(value, n);
+        n += value.length;
+      }
+    } catch (e) {
+      void reader.cancel().catch(() => {
+      });
+      if (e instanceof ZipError) throw e;
+      fail(`${entry.name} is corrupt (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (n !== out.length) fail(`${entry.name} is shorter than its stated size`);
+    return out;
+  }
+  var CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+  function crc32(data) {
+    let c = 4294967295;
+    for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
+    return (c ^ 4294967295) >>> 0;
+  }
+
+  // src/fetch-package.ts
+  var FetchError = class extends Error {
+    constructor(code, message2, url, status = 0, tried = []) {
+      super(message2);
+      this.code = code;
+      this.url = url;
+      this.status = status;
+      this.tried = tried;
+      this.name = "FetchError";
+    }
+    code;
+    url;
+    status;
+    tried;
+  };
+  var DEFAULT_TIMEOUT_MS = 25e3;
+  var DEFAULT_BUDGET_BYTES = 16 * 1024 * 1024;
+  var README_NAMES = ["README-ko.md", "README.ko.md", "README_ko.md", "README-KO.md", "README.md", "readme.md", "README.txt"];
+  var DEFAULT_BRANCHES = ["main", "master"];
+  var MAX_README_BYTES = 200 * 1024;
+  var Budget = class {
+    constructor(limit) {
+      this.limit = limit;
+    }
+    limit;
+    used = 0;
+    add(bytes, url) {
+      this.used += bytes;
+      if (this.used > this.limit) throw new FetchError("too-large", `package exceeds ${this.limit} bytes`, url);
+    }
+  };
+  function withCacheBust(url, options) {
+    if (!options.freshest) return url;
+    const parsed = new URL(url);
+    if (parsed.hostname !== "raw.githubusercontent.com") return url;
+    parsed.searchParams.set("_", String((options.now ?? Date.now)()));
+    return parsed.href;
+  }
+  async function fetchResponse(url, options, accept = "text/plain, application/json, */*") {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS) : null;
+    let response;
+    try {
+      response = await options.fetch(withCacheBust(url, options), {
+        cache: "no-store",
+        redirect: "follow",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { Accept: accept },
+        signal: controller?.signal
+      });
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") throw new FetchError("timeout", `no answer within ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS} ms`, url);
+      throw new FetchError("network", e instanceof Error ? e.message : String(e), url);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+    if (response.status === 404) return null;
+    if ((response.status === 403 || response.status === 429) && new URL(url).hostname === "api.github.com") {
+      throw new FetchError("rate-limited", `GitHub API ${response.status}`, url, response.status);
+    }
+    if (!response.ok) throw new FetchError("http", `HTTP ${response.status}`, url, response.status);
+    return response;
+  }
+  async function fetchBytes(url, options, maxBytes, budget, accept) {
+    const response = await fetchResponse(url, options, accept);
+    if (!response) return null;
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) throw new FetchError("too-large", `${declared} bytes`, url);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new FetchError("too-large", `${bytes.byteLength} bytes`, url);
+    budget.add(bytes.byteLength, url);
+    return bytes;
+  }
+  async function fetchText(url, options, maxBytes, budget) {
+    const bytes = await fetchBytes(url, options, maxBytes, budget);
+    return bytes === null ? null : new TextDecoder("utf-8").decode(bytes);
+  }
+  function parseJson(text, url) {
+    try {
+      return JSON.parse(text.replace(/^\uFEFF/, ""));
+    } catch (e) {
+      throw new FetchError("bad-json", e instanceof Error ? e.message : String(e), url);
+    }
+  }
+  async function readme(read) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const name of README_NAMES) {
+      if (seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      try {
+        const text = await read(name);
+        if (text != null && text.trim()) return { path: name, text };
+      } catch {
+      }
+    }
+    return null;
+  }
+  async function defaultBranch(owner, repo, options, budget) {
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    try {
+      const text = await fetchText(url, { ...options, freshest: false }, 256 * 1024, budget);
+      if (text == null) return null;
+      const info = JSON.parse(text);
+      return typeof info.default_branch === "string" && info.default_branch ? info.default_branch : null;
+    } catch {
+      return null;
+    }
+  }
+  var COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  async function commitOf(owner, repo, ref, options, budget) {
+    if (COMMIT_SHA.test(ref)) return ref;
+    const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodedRef}`;
+    try {
+      const bytes = await fetchBytes(url, { ...options, freshest: false }, 1024, budget, "application/vnd.github.sha");
+      const sha = bytes === null ? "" : new TextDecoder("utf-8").decode(bytes).trim().toLowerCase();
+      return COMMIT_SHA.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+  async function readConsistently(manifestUrl, manifestText, reread, read) {
+    let text = manifestText;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const manifest = parseJson(text, manifestUrl);
+      const normalized = await normalizeManifest(manifest, read);
+      const again = await reread();
+      if (again === null) throw new FetchError("source-changed", "the manifest disappeared during the download", manifestUrl);
+      if (again === text) return { manifest, normalized, manifestText: text };
+      text = again;
+    }
+    throw new FetchError("source-changed", "the manifest kept changing during the download", manifestUrl);
+  }
+  async function fromGithub(source, options) {
+    const budget = new Budget(options.budgetBytes ?? DEFAULT_BUDGET_BYTES);
+    const dir = normalizePath(source.path);
+    const tried = [];
+    const candidates = source.ref ? [source.ref] : [...DEFAULT_BRANCHES];
+    for (let i = 0; i < candidates.length; i++) {
+      const ref = candidates[i];
+      tried.push(ref);
+      for (const filename of MANIFEST_FILENAMES) {
+        const manifestUrl = rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${filename}` : filename);
+        const readManifest = () => fetchText(manifestUrl, options, LIMITS.textFileBytes, budget);
+        const text = await readManifest();
+        if (text == null) continue;
+        const readerAt = (at, opts) => async (path) => {
+          const clean = normalizePath(path);
+          if (!clean) return null;
+          for (const candidate of dir ? [`${dir}/${clean}`, clean] : [clean]) {
+            const found = await fetchText(rawFileUrl(source.owner, source.repo, at, candidate), opts, LIMITS.textFileBytes, budget);
+            if (found != null) return found;
+          }
+          return null;
+        };
+        const readmeAt = (at, opts) => options.readme === false ? null : readme((name) => fetchText(rawFileUrl(source.owner, source.repo, at, dir ? `${dir}/${name}` : name), opts, MAX_README_BYTES, budget));
+        const done = async (manifest2, normalized2, commit2, at, opts) => ({
+          source,
+          ref,
+          commit: commit2,
+          manifestUrl,
+          manifest: manifest2,
+          normalized: normalized2,
+          browseUrl: browseUrl(source, ref),
+          readme: await readmeAt(at, opts),
+          downloadedBytes: budget.used
+        });
+        const commit = options.pinCommit ? await commitOf(source.owner, source.repo, ref, options, budget) : null;
+        if (commit) {
+          const atCommit = { ...options, freshest: false };
+          const pinnedText = commit === ref ? text : await fetchText(rawFileUrl(source.owner, source.repo, commit, dir ? `${dir}/${filename}` : filename), atCommit, LIMITS.textFileBytes, budget);
+          if (pinnedText != null) {
+            const manifest2 = parseJson(pinnedText, manifestUrl);
+            return done(manifest2, await normalizeManifest(manifest2, readerAt(commit, atCommit)), commit, commit, atCommit);
+          }
+        }
+        const { manifest, normalized } = await readConsistently(manifestUrl, text, readManifest, readerAt(ref, options));
+        return done(manifest, normalized, null, ref, options);
+      }
+      if (!source.ref && i === candidates.length - 1 && candidates.length === DEFAULT_BRANCHES.length) {
+        const branch = await defaultBranch(source.owner, source.repo, options, budget);
+        if (branch && !candidates.includes(branch)) candidates.push(branch);
+      }
+    }
+    const where = dir ? `${source.owner}/${source.repo}/${dir}` : `${source.owner}/${source.repo}`;
+    throw new FetchError("manifest-not-found", `No manifest.json in ${where} (tried ${tried.join(", ")})`, browseUrl(source), 404, tried);
+  }
+  async function fromManifestUrl(source, options) {
+    const budget = new Budget(options.budgetBytes ?? DEFAULT_BUDGET_BYTES);
+    const readManifest = () => fetchText(source.url, options, LIMITS.textFileBytes, budget);
+    const text = await readManifest();
+    if (text == null) throw new FetchError("manifest-not-found", `HTTP 404`, source.url, 404);
+    const base = directoryOf(source.url);
+    const resolve = (path) => new URL(normalizePath(path), base).href;
+    const read = async (path) => normalizePath(path) ? fetchText(resolve(path), options, LIMITS.textFileBytes, budget) : null;
+    const { manifest, normalized } = await readConsistently(source.url, text, readManifest, read);
+    return {
+      source,
+      ref: null,
+      commit: null,
+      manifestUrl: source.url,
+      manifest,
+      normalized,
+      browseUrl: source.url,
+      readme: options.readme === false ? null : await readme((name) => fetchText(resolve(name), options, MAX_README_BYTES, budget)),
+      downloadedBytes: budget.used
+    };
+  }
+  function pickManifestEntry(entries2) {
+    const candidates = [...entries2.values()].filter((e) => MANIFEST_FILENAMES.includes(e.name.split("/").pop()?.toLowerCase() ?? ""));
+    if (candidates.length === 0) throw new FetchError("manifest-not-found", "The zip contains no manifest.json", "", 0);
+    const depth = (e) => e.name.split("/").length;
+    const rootNamed = (e) => (e.name.split("/").pop()?.toLowerCase() ?? "") !== "manifest.json";
+    candidates.sort((a, b) => depth(a) - depth(b) || Number(rootNamed(b)) - Number(rootNamed(a)) || a.name.localeCompare(b.name));
+    return candidates[0];
+  }
+  async function fromZip(source, options) {
+    const budget = new Budget(Math.max(options.budgetBytes ?? DEFAULT_BUDGET_BYTES, MAX_ZIP_BYTES));
+    const bytes = await fetchBytes(source.url, options, MAX_ZIP_BYTES, budget, "application/zip, application/octet-stream, */*");
+    if (!bytes) throw new FetchError("manifest-not-found", "HTTP 404", source.url, 404);
+    let entries2;
+    let manifestEntry;
+    try {
+      entries2 = await listZip(bytes);
+      manifestEntry = pickManifestEntry(entries2);
+    } catch (e) {
+      if (e instanceof FetchError) throw e;
+      throw new FetchError("bad-zip", e instanceof Error ? e.message : String(e), source.url);
+    }
+    const byLowerName = new Map([...entries2.values()].map((e) => [e.name.toLowerCase(), e]));
+    const dir = manifestEntry.name.includes("/") ? manifestEntry.name.replace(/\/[^/]*$/, "") : "";
+    const decoder = new TextDecoder("utf-8");
+    const readEntry = async (entry, maxBytes) => {
+      try {
+        return decoder.decode(await readZipEntry(bytes, entry, maxBytes));
+      } catch (e) {
+        throw new FetchError("bad-zip", e instanceof Error ? e.message : String(e), source.url);
+      }
+    };
+    const lookup = (path) => {
+      const clean = normalizePath(path);
+      if (!clean) return null;
+      for (const candidate of dir ? [`${dir}/${clean}`, clean] : [clean]) {
+        const entry = byLowerName.get(candidate.toLowerCase());
+        if (entry) return entry;
+      }
+      return null;
+    };
+    const read = async (path) => {
+      const entry = lookup(path);
+      return entry ? readEntry(entry, LIMITS.textFileBytes) : null;
+    };
+    const manifestUrl = `${source.url}!/${manifestEntry.name}`;
+    const manifest = parseJson(await readEntry(manifestEntry, LIMITS.textFileBytes), manifestUrl);
+    const normalized = await normalizeManifest(manifest, read);
+    return {
+      source,
+      ref: null,
+      commit: null,
+      manifest,
+      normalized,
+      manifestUrl,
+      browseUrl: source.url,
+      readme: options.readme === false ? null : await readme(async (name) => {
+        const entry = lookup(name);
+        return entry ? readEntry(entry, MAX_README_BYTES) : null;
+      }),
+      downloadedBytes: budget.used
+    };
+  }
+  async function fetchPackage(source, options) {
+    switch (source.kind) {
+      case "github-repo":
+        return fromGithub(source, options);
+      case "manifest-url":
+        return fromManifestUrl(source, options);
+      case "zip-url":
+        return fromZip(source, options);
+    }
+  }
+
+  // src/version.ts
+  function numericParts(value) {
+    if (!value) return null;
+    const normalized = value.trim().replace(/^v/i, "");
+    if (!/^\d+(?:\.\d+)*$/.test(normalized)) return null;
+    return normalized.split(".").map((part) => Number.parseInt(part, 10));
+  }
+  function compareVersions(left, right) {
+    const a = numericParts(left), b = numericParts(right);
+    if (!a || !b) return null;
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const delta = (a[i] ?? 0) - (b[i] ?? 0);
+      if (delta !== 0) return delta < 0 ? -1 : 1;
+    }
+    return 0;
+  }
+  function updateState(installed, latest) {
+    const cmp = compareVersions(latest.version, installed.version);
+    if (cmp === 1) return "update";
+    if (cmp === -1) return "older";
+    if (installed.hash && latest.hash) return installed.hash === latest.hash ? "up-to-date" : "changed";
+    if (cmp === 0) return "up-to-date";
+    return "unknown";
+  }
+
+  // src/installer.ts
+  async function autoApprove(previous, before, after, draft, deps) {
+    if (!previous?.autoApprove && !deps.approveNow) return { approved: false, notApproved: "off", approveError: null };
+    if (!before.enabled) return { approved: false, notApproved: "was-off", approveError: null };
+    const grew = draft.capabilities.filter((c) => !before.capabilities.includes(c));
+    if (grew.length) {
+      await log(deps, { action: "approve", result: "refused", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(after), detail: `capabilities grew: ${grew.join(", ")}; manual approval required` });
+      return { approved: false, notApproved: "capabilities-grew", approveError: null };
+    }
+    try {
+      const approved = await deps.client.approve(after.id, after.contentHash, draft.capabilities.includes(FULL_PAGE_ACCESS));
+      await log(deps, { action: "approve", result: "ok", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(approved), detail: previous?.autoApprove ? "auto re-approval (user opt-in)" : "kept on (bulk update, user choice)" });
+      return { approved: approved.enabled && approved.approvedHash === after.contentHash, notApproved: null, approveError: null };
+    } catch (e) {
+      await log(deps, { action: "approve", result: "failed", extensionId: after.id, name: after.name, source: previous?.input ?? null, ref: previous?.ref ?? null, from: sideOf(before), to: sideOf(after), detail: e instanceof Error ? e.message : String(e) });
+      return { approved: false, notApproved: "failed", approveError: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  var NO_APPROVAL = { approved: false, notApproved: null, approveError: null };
+  var InstallError = class extends Error {
+    constructor(problem, message2) {
+      super(message2);
+      this.problem = problem;
+      this.name = "InstallError";
+    }
+    problem;
+  };
+  var sameSource = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  var sideOf = (x, hash) => x ? { version: x.version, hash: hash ?? x.contentHash ?? null, capabilities: [...x.capabilities] } : null;
+  async function log(deps, entry) {
+    try {
+      await deps.audit?.record(entry);
+    } catch {
+    }
+  }
+  var sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  var nowOf = (deps) => (deps.now ?? (() => /* @__PURE__ */ new Date()))();
+  async function digest(draft, files) {
+    const textFor = (role) => (role === "js" ? draft.js : role === "css" ? draft.css : draft.serverJs) ?? "";
+    const byRole = /* @__PURE__ */ new Map();
+    for (const file of files) {
+      if (!byRole.has(file.role)) byRole.set(file.role, await sha256Hex(textFor(file.role)));
+    }
+    return files.map((file) => ({ ...file, sha256: byRole.get(file.role) ?? "" }));
+  }
+  async function engineView(client, draft, contentHash, tracked, extensionId) {
+    let list;
+    try {
+      list = await client.list();
+    } catch (e) {
+      return { view: null, error: e instanceof EngineApiError ? e : new EngineApiError("http", 0, String(e)) };
+    }
+    const record = (extensionId ? list.find((x) => x.id === extensionId) : null) ?? (tracked ? list.find((x) => x.id === tracked.extensionId) : null) ?? list.find((x) => sameName(x.name, draft.name)) ?? null;
+    if (!record) return { view: null, error: null };
+    return {
+      error: null,
+      view: {
+        record,
+        sameCode: record.contentHash === contentHash,
+        editedInMarinara: tracked !== null && tracked.extensionId === record.id && tracked.installedHash !== record.contentHash,
+        runtimeDiffers: record.runtime !== draft.runtime,
+        nameDiffers: !sameName(record.name, draft.name),
+        capabilitiesAdded: draft.capabilities.filter((c) => !record.capabilities.includes(c)),
+        capabilitiesRemoved: record.capabilities.filter((c) => !draft.capabilities.includes(c)),
+        changes: await compareCode(record, draft)
+      }
+    };
+  }
+  async function prepare(input, deps, options = {}) {
+    const source = parseSourceUrl(input);
+    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest, readme: options.readme, pinCommit: true });
+    const draft = pkg.normalized.draft;
+    const contentHash = await engineContentHash(draft);
+    const records = await deps.store.load();
+    const tracked = (options.extensionId ? records.find((r) => r.extensionId === options.extensionId) : null) ?? records.find((r) => sameSource(r.source, source)) ?? records.find((r) => sameName(r.name, draft.name)) ?? null;
+    const { view, error } = await engineView(deps.client, draft, contentHash, tracked, options.extensionId ?? null);
+    return {
+      input: input.trim(),
+      source,
+      pkg,
+      draft,
+      contentHash,
+      files: await digest(draft, pkg.normalized.files),
+      fullPageAccess: draft.capabilities.includes(FULL_PAGE_ACCESS),
+      tracked,
+      engine: view,
+      engineListError: error
+    };
+  }
+  function recordFrom(prepared, extension, previous, now, installedHash) {
+    const iso = now.toISOString();
+    const state = installedHash === prepared.contentHash ? "up-to-date" : updateState({ version: extension.version, hash: installedHash }, { version: prepared.draft.version, hash: prepared.contentHash });
+    return {
+      id: previous?.id ?? newRecordId(),
+      input: prepared.input,
+      source: prepared.source,
+      ref: prepared.pkg.ref,
+      name: extension.name,
+      extensionId: extension.id,
+      installedVersion: extension.version ?? null,
+      installedHash,
+      installedAt: iso,
+      lastCheckedAt: iso,
+      latest: { version: prepared.draft.version, hash: prepared.contentHash, state, checkedAt: iso },
+      lastError: null,
+      autoApprove: previous?.autoApprove === true,
+      autoUpdate: previous?.autoUpdate === true
+    };
+  }
+  async function verifyAnswer(prepared, extension, codeChanged) {
+    if (extension.contentHash !== prepared.contentHash) {
+      throw new InstallError("unexpected-result", `Marinara stored ${extension.contentHash}, expected ${prepared.contentHash}`);
+    }
+    if (codeChanged && extension.enabled) {
+      throw new InstallError("unexpected-result", "Marinara reports the extension as still enabled after a code change");
+    }
+  }
+  async function install(prepared, deps, mode) {
+    const action = mode.kind === "create" ? "install" : mode.kind;
+    const base = {
+      action,
+      extensionId: mode.kind === "create" ? null : mode.extensionId,
+      name: prepared.draft.name,
+      source: prepared.input,
+      ref: prepared.pkg.ref,
+      from: sideOf(prepared.engine?.record ?? null),
+      to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash)
+    };
+    try {
+      const result = await installUnlogged(prepared, deps, mode);
+      if (result.self) return result;
+      await log(deps, { ...base, action: result.mode.kind === "create" ? "install" : result.mode.kind, extensionId: result.extension.id, result: "ok", detail: null, to: sideOf(result.extension) });
+      return result;
+    } catch (e) {
+      const refused = e instanceof InstallError;
+      await log(deps, { ...base, result: refused ? "refused" : "failed", detail: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+      throw e;
+    }
+  }
+  async function installUnlogged(prepared, deps, mode) {
+    const now = nowOf(deps);
+    const previous = prepared.tracked ?? (mode.kind !== "create" ? (await deps.store.load()).find((r) => r.extensionId === mode.extensionId) ?? null : null);
+    if (mode.kind === "create") {
+      const extension2 = await deps.client.create(prepared.draft);
+      await verifyAnswer(prepared, extension2, true);
+      const record2 = recordFrom(prepared, extension2, previous, now, extension2.contentHash);
+      await deps.store.upsert(record2);
+      return { record: record2, extension: extension2, mode, codeChanged: true, self: false, ...NO_APPROVAL };
+    }
+    const current = (await deps.client.list()).find((x) => x.id === mode.extensionId) ?? null;
+    if (!current) throw new EngineApiError("not-found", 404, `Marinara has no extension ${mode.extensionId}`);
+    if (mode.kind === "link") {
+      const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
+      await deps.store.upsert(record2);
+      return { record: record2, extension: current, mode, codeChanged: false, self: false, ...NO_APPROVAL };
+    }
+    if (prepared.engine && prepared.engine.record.id === current.id && prepared.engine.record.contentHash !== current.contentHash) {
+      throw new InstallError("record-changed", `the extension's code changed since the preview (${prepared.engine.record.contentHash} → ${current.contentHash})`);
+    }
+    if (current.runtime !== prepared.draft.runtime) {
+      throw new InstallError("runtime-changed", `${current.runtime} → ${prepared.draft.runtime}`);
+    }
+    if (current.contentHash === prepared.contentHash) {
+      const record2 = recordFrom(prepared, current, previous, now, current.contentHash);
+      await deps.store.upsert(record2);
+      return { record: record2, extension: current, mode: { kind: "link", extensionId: current.id }, codeChanged: false, self: false, ...NO_APPROVAL };
+    }
+    const isSelf = deps.selfId != null && current.id === deps.selfId;
+    if (isSelf) {
+      const expected = recordFrom(prepared, { ...current, version: prepared.draft.version, contentHash: prepared.contentHash }, previous, now, prepared.contentHash);
+      await deps.store.upsert(expected);
+      await log(deps, {
+        action: "update",
+        result: "ok",
+        extensionId: current.id,
+        name: prepared.draft.name,
+        source: prepared.input,
+        ref: prepared.pkg.ref,
+        from: sideOf(current),
+        to: sideOf({ version: prepared.draft.version, capabilities: prepared.draft.capabilities }, prepared.contentHash),
+        detail: "self-update: recorded before the PATCH; Fetchy is switched off until the new code is approved"
+      });
+      let extension2;
+      try {
+        extension2 = await deps.client.update(current.id, prepared.draft);
+      } catch (e) {
+        if (previous) await deps.store.upsert(previous);
+        else await deps.store.remove(expected.id);
+        await log(deps, { action: "update", result: "failed", extensionId: current.id, name: prepared.draft.name, source: prepared.input, ref: prepared.pkg.ref, from: sideOf(current), to: null, detail: e instanceof Error ? e.message : String(e) });
+        throw e;
+      }
+      await verifyAnswer(prepared, extension2, true);
+      const approval2 = await autoApprove(previous, current, extension2, prepared.draft, { client: deps.client, approveNow: deps.approveNow });
+      return { record: expected, extension: extension2, mode, codeChanged: true, self: true, ...approval2 };
+    }
+    const extension = await deps.client.update(current.id, prepared.draft);
+    await verifyAnswer(prepared, extension, true);
+    const approval = await autoApprove(previous, current, extension, prepared.draft, deps);
+    const record = { ...recordFrom(prepared, extension, previous, now, extension.contentHash), autoApprove: previous?.autoApprove === true, autoUpdate: previous?.autoUpdate === true };
+    await deps.store.upsert(record);
+    return { record, extension, mode, codeChanged: true, self: false, ...approval };
+  }
+  function pinned(record) {
+    return record.source.kind === "github-repo" && record.ref && !record.source.ref ? { ...record.source, ref: record.ref } : record.source;
+  }
+  async function checkSource(record, deps) {
+    const now = nowOf(deps).toISOString();
+    try {
+      const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false });
+      const hash = await engineContentHash(pkg.normalized.draft);
+      const state = updateState(
+        { version: record.installedVersion, hash: record.installedHash },
+        { version: pkg.normalized.draft.version, hash }
+      );
+      if (state !== "up-to-date" && (record.latest?.hash !== hash || record.latest?.state !== state)) {
+        await log(deps, {
+          action: "check",
+          result: "ok",
+          extensionId: record.extensionId,
+          name: record.name,
+          source: record.input,
+          ref: record.ref,
+          from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] },
+          to: sideOf({ version: pkg.normalized.draft.version, capabilities: pkg.normalized.draft.capabilities }, hash),
+          detail: state
+        });
+      }
+      return { ...record, lastCheckedAt: now, lastError: null, latest: { version: pkg.normalized.draft.version, hash, state, checkedAt: now } };
+    } catch (e) {
+      return { ...record, lastCheckedAt: now, lastError: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  function checkedLongAgo(record, now, maxAgeMs) {
+    const at = record.lastCheckedAt ? Date.parse(record.lastCheckedAt) : NaN;
+    return !Number.isFinite(at) || at > now.getTime() || now.getTime() - at > maxAgeMs;
+  }
+  async function checkAll(deps, options = {}) {
+    const records = await deps.store.load();
+    const checked = [...records];
+    const todo = records.map((r, index) => ({ r, index })).filter(({ r }) => options.due?.(r) ?? true);
+    let next = 0, done = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const { r, index } = todo[next++];
+        const result = await checkSource(r, deps);
+        checked[index] = result;
+        options.onProgress?.(++done, todo.length, result);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 3, todo.length)) }, worker));
+    if (todo.length) await deps.store.save(checked);
+    return checked;
+  }
+  async function updateSource(record, deps) {
+    const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false, pinCommit: true });
+    const draft = pkg.normalized.draft;
+    const contentHash = await engineContentHash(draft);
+    const { view, error } = await engineView(deps.client, draft, contentHash, record, record.extensionId);
+    const prepared = {
+      input: record.input,
+      source: record.source,
+      pkg,
+      draft,
+      contentHash,
+      files: await digest(draft, pkg.normalized.files),
+      fullPageAccess: draft.capabilities.includes(FULL_PAGE_ACCESS),
+      tracked: record,
+      engine: view,
+      engineListError: error
+    };
+    return install(prepared, deps, { kind: "update", extensionId: record.extensionId });
+  }
+  async function updateAll(deps, options = {}) {
+    const due = (await deps.store.load()).filter((r) => r.latest && (r.latest.state === "update" || r.latest.state === "changed" || r.latest.state === "older"));
+    const results = [];
+    let done = 0;
+    for (const record of due) {
+      let result;
+      try {
+        result = await updateSource(record, { ...deps, approveNow: options.keepEnabled === true });
+      } catch (e) {
+        result = e instanceof Error ? e : new Error(String(e));
+      }
+      results.push({ record, result });
+      options.onProgress?.(++done, due.length, record, result);
+      if (!(result instanceof Error) && result.self) break;
+    }
+    return results;
+  }
+  async function rollbackSource(record, contentHash, deps) {
+    let extension;
+    try {
+      extension = await deps.client.rollback(record.extensionId, contentHash);
+    } catch (e) {
+      await log(deps, { action: "rollback", result: "failed", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: { version: null, hash: contentHash, capabilities: [] }, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+    await log(deps, { action: "rollback", result: "ok", extensionId: extension.id, name: extension.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(extension), detail: null });
+    const now = nowOf(deps).toISOString();
+    const latest = record.latest ? { ...record.latest, state: updateState({ version: extension.version, hash: extension.contentHash }, { version: record.latest.version, hash: record.latest.hash }) } : null;
+    const updated = { ...record, installedVersion: extension.version, installedHash: extension.contentHash, installedAt: now, latest };
+    await deps.store.upsert(updated);
+    return { record: updated, extension };
+  }
+  async function forgetSource(record, deps, deleteFromEngine) {
+    const entry = { action: deleteFromEngine ? "delete" : "forget", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: null };
+    if (deleteFromEngine) {
+      try {
+        await deps.client.remove(record.extensionId);
+      } catch (e) {
+        if (!(e instanceof EngineApiError && e.code === "not-found")) {
+          await log(deps, { ...entry, result: "failed", detail: e instanceof Error ? e.message : String(e) });
+          throw e;
+        }
+      }
+    }
+    await deps.store.remove(record.id);
+    await log(deps, { ...entry, result: "ok", detail: null });
+  }
+  async function reconcile(deps) {
+    const records = await deps.store.load();
+    if (records.length === 0) return [];
+    const list = await deps.client.list();
+    const byId = new Map(list.map((x) => [x.id, x]));
+    const now = nowOf(deps).toISOString();
+    const changed = [];
+    const next = records.map((record) => {
+      const engine = byId.get(record.extensionId);
+      if (!engine) {
+        if (record.lastError?.startsWith("missing:")) return record;
+        const marked = { ...record, lastError: `missing: Marinara no longer has extension ${record.extensionId}` };
+        changed.push(marked);
+        return marked;
+      }
+      if (engine.contentHash !== record.installedHash && record.latest && record.latest.hash === engine.contentHash) {
+        const completed = { ...record, installedVersion: engine.version, installedHash: engine.contentHash, installedAt: engine.updatedAt || now, latest: { ...record.latest, state: "up-to-date" }, lastError: null };
+        changed.push(completed);
+        void log(deps, { action: "update", result: "ok", extensionId: engine.id, name: engine.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(engine), detail: "completed after an interrupted update (reconciled on open)" });
+        return completed;
+      }
+      return record;
+    });
+    if (changed.length) await deps.store.save(next);
+    return changed;
+  }
+  async function setAutoApprove(record, value, deps) {
+    const updated = { ...record, autoApprove: value };
+    await deps.store.upsert(updated);
+    await log(deps, { action: "approve", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "auto re-approval switched on by the user" : "auto re-approval switched off" });
+    return updated;
+  }
+  async function disableExtension(extension, deps) {
+    try {
+      const result = await deps.client.disable(extension.id);
+      await log(deps, { action: "disable", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: sideOf(result), detail: null });
+      return result;
+    } catch (e) {
+      await log(deps, { action: "disable", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+  async function deleteExtension(extension, deps) {
+    const record = (await deps.store.load()).find((r) => r.extensionId === extension.id);
+    if (record) return forgetSource(record, deps, true);
+    try {
+      await deps.client.remove(extension.id);
+    } catch (e) {
+      if (!(e instanceof EngineApiError && e.code === "not-found")) {
+        await log(deps, { action: "delete", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
+        throw e;
+      }
+    }
+    await log(deps, { action: "delete", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: null });
+  }
+  async function overview(deps) {
+    const [list, records] = await Promise.all([deps.client.list(), deps.store.load()]);
+    const byExtension = new Map(records.map((r) => [r.extensionId, r]));
+    const rows = list.filter((x) => x.source !== "professor_mari").map((extension) => ({ extension, record: byExtension.get(extension.id) ?? null }));
+    const known = new Set(list.map((x) => x.id));
+    for (const record of records) if (!known.has(record.extensionId)) rows.push({ extension: null, record });
+    return rows;
+  }
+  function exportSources(records) {
+    return JSON.stringify({ kind: "me-fetchy.sources", version: 1, exportedAt: (/* @__PURE__ */ new Date()).toISOString(), sources: records }, null, 2);
+  }
+  async function importSources(json, store) {
+    let parsed;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      throw new SyntaxError("not JSON");
+    }
+    const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray(parsed.sources) ? parsed.sources : null;
+    if (!list) throw new SyntaxError("not an exported source list");
+    const incoming = list.map(parseRecord).filter((r) => r !== null);
+    const merged = mergeImported(await store.load(), incoming);
+    if (merged.added) await store.save(merged.records);
+    return { imported: merged.added, kept: merged.kept, different: merged.different, ignored: list.length - incoming.length };
+  }
+  async function setAutoUpdate(record, value, deps) {
+    const updated = { ...record, autoUpdate: value };
+    await deps.store.upsert(updated);
+    await log(deps, { action: "check", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "automatic updates switched on by the user" : "automatic updates switched off" });
+    return updated;
+  }
+  var hasUpdate = (r) => !!r.latest && (r.latest.state === "update" || r.latest.state === "changed");
+  var editedSinceInstall = (record, extension) => extension.contentHash !== record.installedHash && extension.contentHash !== record.latest?.hash;
+  async function refuseEdited(record, extension, deps) {
+    const error = new InstallError("edited", `Marinara holds ${extension.contentHash}; Fetchy last installed ${record.installedHash}`);
+    await log(deps, {
+      action: "update",
+      result: "refused",
+      extensionId: record.extensionId,
+      name: record.name,
+      source: record.input,
+      ref: record.ref,
+      from: sideOf(extension),
+      to: null,
+      detail: `automatic update skipped: ${error.message}`
+    });
+    return error;
+  }
+  async function autoUpdate(deps, options) {
+    const out = [];
+    let engine = null;
+    for (const first of await deps.store.load()) {
+      if (!first.autoUpdate || first.extensionId === deps.selfId) continue;
+      let record = first;
+      if (options.check) {
+        record = await checkSource(first, deps);
+        await deps.store.upsert(record);
+      }
+      if (!hasUpdate(record)) continue;
+      try {
+        engine ??= new Map((await deps.client.list()).map((x) => [x.id, x]));
+        const current = engine.get(record.extensionId);
+        if (current && editedSinceInstall(record, current)) throw await refuseEdited(record, current, deps);
+        out.push({ record, result: await updateSource(record, deps) });
+      } catch (e) {
+        out.push({ record, result: e instanceof Error ? e : new Error(String(e)) });
+      }
+    }
+    return out;
+  }
+
+  // src/organize.ts
+  var emptyOrganize = () => ({ folders: [], tags: [], of: {} });
+  var NAME_MAX = 40;
+  function names(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const x of raw) {
+      if (!x || typeof x.id !== "string" || !x.id || out.some((y) => y.id === x.id)) continue;
+      const name = typeof x.name === "string" ? x.name.trim().slice(0, NAME_MAX) : "";
+      if (name) out.push({ id: x.id, name });
+    }
+    return out;
+  }
+  function normalizeOrganize(raw) {
+    const r = raw && typeof raw === "object" ? raw : {};
+    const folders = names(r.folders);
+    const tags = names(r.tags);
+    const folderIds = new Set(folders.map((f) => f.id));
+    const tagIds = new Set(tags.map((t) => t.id));
+    const of = {};
+    for (const [key, v] of Object.entries(r.of && typeof r.of === "object" ? r.of : {})) {
+      if (!v || typeof v !== "object" || key === "__proto__") continue;
+      const folder = typeof v.folder === "string" && folderIds.has(v.folder) ? v.folder : void 0;
+      const list = Array.isArray(v.tags) ? [...new Set(v.tags.filter((t) => typeof t === "string" && tagIds.has(t)))] : [];
+      if (folder || list.length) of[key] = { ...folder ? { folder } : {}, ...list.length ? { tags: list } : {} };
+    }
+    return { folders, tags, of };
+  }
+  var counter = 0;
+  var newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
+  function addFolder(o, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    return clean ? { ...o, folders: [...o.folders, { id: newId("f"), name: clean }] } : o;
+  }
+  function addTag(o, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    if (!clean || o.tags.some((t) => t.name.toLowerCase() === clean.toLowerCase())) return o;
+    return { ...o, tags: [...o.tags, { id: newId("t"), name: clean }] };
+  }
+  function rename(o, kind, id, name) {
+    const clean = name.trim().slice(0, NAME_MAX);
+    if (!clean) return o;
+    return { ...o, [kind]: o[kind].map((x) => x.id === id ? { ...x, name: clean } : x) };
+  }
+  function remove(o, kind, id) {
+    return normalizeOrganize({ ...o, [kind]: o[kind].filter((x) => x.id !== id) });
+  }
+  function setFolder(o, key, folder) {
+    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], folder: folder ?? void 0 } } });
+  }
+  function toggleTag(o, key, tag) {
+    const now = o.of[key]?.tags ?? [];
+    const tags = now.includes(tag) ? now.filter((t) => t !== tag) : [...now, tag];
+    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], tags } } });
+  }
+
   // src/catalog.ts
   var CATALOG = [
     { name: "Dispensa", input: "FigCake/ME.Dispensa", about: { en: "Quick Replies (STscript), the Dock, the visualizer and a memo pad", ko: "퀵 리플라이(STscript)·독·비주얼라이저·메모장" } },
@@ -2319,65 +2360,1224 @@
     return mode.kind !== "create" && p.tracked && sameRepo(p.tracked.source, p) ? { ...p, input: p.tracked.input, source: p.tracked.source } : p;
   }
 
-  // src/organize.ts
-  var emptyOrganize = () => ({ folders: [], tags: [], of: {} });
-  var NAME_MAX = 40;
-  function names(raw) {
-    if (!Array.isArray(raw)) return [];
-    const out = [];
-    for (const x of raw) {
-      if (!x || typeof x.id !== "string" || !x.id || out.some((y) => y.id === x.id)) continue;
-      const name = typeof x.name === "string" ? x.name.trim().slice(0, NAME_MAX) : "";
-      if (name) out.push({ id: x.id, name });
+  // src/errors.ts
+  function describeError(error, t, context = {}) {
+    if (error instanceof SourceUrlError) {
+      return t(`error.url.${error.reason}`, { message: error.message });
     }
-    return out;
-  }
-  function normalizeOrganize(raw) {
-    const r = raw && typeof raw === "object" ? raw : {};
-    const folders = names(r.folders);
-    const tags = names(r.tags);
-    const folderIds = new Set(folders.map((f) => f.id));
-    const tagIds = new Set(tags.map((t) => t.id));
-    const of = {};
-    for (const [key, v] of Object.entries(r.of && typeof r.of === "object" ? r.of : {})) {
-      if (!v || typeof v !== "object" || key === "__proto__") continue;
-      const folder = typeof v.folder === "string" && folderIds.has(v.folder) ? v.folder : void 0;
-      const list = Array.isArray(v.tags) ? [...new Set(v.tags.filter((t) => typeof t === "string" && tagIds.has(t)))] : [];
-      if (folder || list.length) of[key] = { ...folder ? { folder } : {}, ...list.length ? { tags: list } : {} };
+    if (error instanceof FetchError) {
+      return t(`error.fetch.${error.code}`, { url: error.url, status: error.status, message: error.message });
     }
-    return { folders, tags, of };
-  }
-  var counter = 0;
-  var newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
-  function addFolder(o, name) {
-    const clean = name.trim().slice(0, NAME_MAX);
-    return clean ? { ...o, folders: [...o.folders, { id: newId("f"), name: clean }] } : o;
-  }
-  function addTag(o, name) {
-    const clean = name.trim().slice(0, NAME_MAX);
-    if (!clean || o.tags.some((t) => t.name.toLowerCase() === clean.toLowerCase())) return o;
-    return { ...o, tags: [...o.tags, { id: newId("t"), name: clean }] };
-  }
-  function rename(o, kind, id, name) {
-    const clean = name.trim().slice(0, NAME_MAX);
-    if (!clean) return o;
-    return { ...o, [kind]: o[kind].map((x) => x.id === id ? { ...x, name: clean } : x) };
-  }
-  function remove(o, kind, id) {
-    return normalizeOrganize({ ...o, [kind]: o[kind].filter((x) => x.id !== id) });
-  }
-  function setFolder(o, key, folder) {
-    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], folder: folder ?? void 0 } } });
-  }
-  function toggleTag(o, key, tag) {
-    const now = o.of[key]?.tags ?? [];
-    const tags = now.includes(tag) ? now.filter((t) => t !== tag) : [...now, tag];
-    return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], tags } } });
+    if (error instanceof ManifestError) {
+      const p = error.problem;
+      const params = {};
+      for (const [key, value] of Object.entries(p)) {
+        if (key === "code") continue;
+        params[key] = Array.isArray(value) ? value.filter(Boolean).join(", ") : String(value);
+      }
+      return t(`error.manifest.${p.code}`, params);
+    }
+    if (error instanceof InstallError) {
+      return t(`error.install.${error.problem}`, { message: error.message });
+    }
+    if (error instanceof EngineApiError) {
+      return t(`error.engine.${error.code}`, { message: error.message, status: error.status, name: context.name ?? "" });
+    }
+    return t("error.unknown", { message: error instanceof Error ? error.message : String(error) });
   }
 
-  // src/ui.ts
-  var HOST_ELEMENT_ID = "me-fetchy";
-  var OPEN_CHECK_EVERY_MS = 30 * 6e4;
+  // src/ui/actions.ts
+  function createActions(core) {
+    const { s, host, store, deps, audit, t, render, guard } = core;
+    async function loadPolicy() {
+      try {
+        s.policy = await deps.client.policy();
+        s.policyError = null;
+      } catch (e) {
+        s.policy = null;
+        s.policyError = describeError(e, t);
+      }
+    }
+    async function loadRecords() {
+      try {
+        s.records = await store.load();
+      } catch (e) {
+        s.records = [];
+        s.sourcesMessage = { kind: "err", text: describeError(e, t) };
+      }
+    }
+    async function reconcileRecords() {
+      try {
+        const changed = await reconcile(deps);
+        if (changed.some((r) => !r.lastError)) s.reconcileMessage = { kind: "ok", text: t("log.reconciled", { count: changed.filter((r) => !r.lastError).length }) };
+        if (changed.length) s.records = await store.load();
+      } catch {
+      }
+    }
+    async function loadLog() {
+      try {
+        s.logEntries = await audit.list();
+      } catch {
+        s.logEntries = [];
+      }
+    }
+    async function loadRows() {
+      try {
+        s.rows = await overview(deps);
+        s.rowsError = null;
+      } catch (e) {
+        s.rows = null;
+        s.rowsError = describeError(e, t);
+      }
+    }
+    const afterChange = async () => {
+      await Promise.all([loadRecords(), loadRows(), loadLog()]);
+    };
+    function resultMessage(result) {
+      const params = { name: result.extension.name, hash: result.extension.contentHash, error: result.approveError ?? "" };
+      if (result.self) return { kind: "ok", text: t(result.approved ? "result.selfUpdatedOn" : "result.selfUpdated", params) };
+      if (result.mode.kind === "create") return { kind: "ok", text: t("result.created", params) };
+      if (!result.codeChanged) return { kind: "ok", text: t("result.linked", params) };
+      if (result.approved) return { kind: "ok", text: t("result.updatedAndOn", params) };
+      if (result.notApproved === "capabilities-grew") return { kind: "warn", text: t("result.notApproved.capabilities-grew", params) };
+      if (result.notApproved === "failed") return { kind: "err", text: t("result.notApproved.failed", params) };
+      return { kind: "ok", text: t("result.updated", params) };
+    }
+    const updateLines = (results) => results.map(({ record, result }) => t("result.updatedAllOne", { name: record.name, text: result instanceof Error ? describeError(result, t, { name: record.name }) : resultMessage(result).text }));
+    const forSources = (name, fn) => guard(async () => {
+      s.sourcesMessage = null;
+      try {
+        await fn();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t, { name }) };
+      }
+    });
+    const onFetch = () => guard(async () => {
+      s.prepared = null;
+      s.pendingExistingId = null;
+      s.installMessage = null;
+      try {
+        s.prepared = await prepare(s.urlInput, deps, { extensionId: s.linking?.id ?? null });
+      } catch (e) {
+        s.installMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onInstall = (mode) => guard(async () => {
+      if (!s.prepared) return;
+      const name = s.prepared.draft.name;
+      try {
+        const result = await install(s.prepared, { ...deps, approveNow: s.keepEnabled }, mode);
+        s.installMessage = resultMessage(result);
+        s.prepared = null;
+        s.pendingExistingId = null;
+        s.linking = null;
+        s.urlInput = "";
+        if (result.self) {
+          s.retired = true;
+          return;
+        }
+        await afterChange();
+      } catch (e) {
+        if (e instanceof EngineApiError && e.code === "name-exists" && e.existingId) {
+          s.pendingExistingId = e.existingId;
+          s.installMessage = { kind: "warn", text: t("result.nameExists", { name }) };
+        } else {
+          s.installMessage = { kind: "err", text: describeError(e, t, { name }) };
+        }
+      }
+    });
+    const cancelPreview = () => {
+      s.prepared = null;
+      s.pendingExistingId = null;
+      s.installMessage = null;
+      render();
+    };
+    const startLink = (extension) => {
+      s.linking = extension;
+      s.prepared = null;
+      s.pendingExistingId = null;
+      s.installMessage = null;
+      s.urlInput = "";
+      render();
+      core.panel.querySelector("input.url")?.focus();
+    };
+    const stopLink = () => {
+      s.linking = null;
+      s.prepared = null;
+      render();
+    };
+    const reinstall = (record) => {
+      s.urlInput = record.input;
+      s.prepared = null;
+      render();
+      void onFetch();
+    };
+    const catalogLine = (o) => o.status === "done" ? resultMessage(o.result) : o.status === "skipped" ? { kind: o.reason === "current" ? "ok" : "warn", text: t(`catalog.skipped.${o.reason}`, { name: o.entry.name, input: o.entry.input }) } : o.status === "stopped" ? { kind: "warn", text: t("catalog.stopped", { name: o.entry.name }) } : { kind: "err", text: t("catalog.failed", { name: o.entry.name, error: describeError(o.error, t, { name: o.entry.name }) }) };
+    const onCatalogInstall = () => guard(async () => {
+      const chosen = CATALOG.filter((e) => s.catalogPicked.has(e.name));
+      if (!chosen.length) return;
+      s.catalogResults = [];
+      s.catalogRunning = true;
+      let outcomes;
+      try {
+        outcomes = await installCatalog(chosen, { ...deps, approveNow: s.keepEnabled }, (done, total, entry) => {
+          s.catalogMessage = { kind: "info", text: t("catalog.progress", { name: entry.name, done: done + 1, total }) };
+          render();
+        });
+      } finally {
+        s.catalogRunning = false;
+      }
+      s.catalogResults = outcomes.map(catalogLine);
+      const ok = outcomes.filter((o) => o.status === "done" || o.status === "skipped" && o.reason === "current").length;
+      s.catalogMessage = { kind: ok === outcomes.length ? "ok" : "warn", text: t("catalog.done", { ok, total: outcomes.length }) };
+      if (outcomes.some((o) => o.status === "done" && o.result.codeChanged)) s.catalogResults.push({ kind: "info", text: t("catalog.reload") });
+      s.catalogPicked.clear();
+      for (const o of outcomes) if (o.status === "failed" || o.status === "stopped") s.catalogPicked.add(o.entry.name);
+      if (s.prepared && chosen.some((e) => e.name.toLowerCase() === s.prepared?.draft.name.trim().toLowerCase())) {
+        s.prepared = null;
+        s.pendingExistingId = null;
+      }
+      await afterChange();
+    });
+    const pickCatalog = (name, on) => {
+      if (on) s.catalogPicked.add(name);
+      else s.catalogPicked.delete(name);
+      render();
+    };
+    const setBundleOpen = (open) => {
+      s.bundleOpen = open;
+      render();
+    };
+    async function checkCatalogQuietly() {
+      const stale = (r) => !r.lastCheckedAt || Date.now() - Date.parse(r.lastCheckedAt) > 6 * 36e5;
+      const due = s.records.filter((r) => CATALOG.some((e) => isCatalogSource(e, r.source)) && stale(r));
+      if (!due.length || s.busy) return;
+      try {
+        for (const record of due) {
+          const checked = await checkSource(record, deps);
+          s.records = s.records.map((r) => r.id === record.id ? checked : r);
+        }
+        await store.save(s.records);
+        await loadRows();
+      } catch {
+      }
+    }
+    const checkRecords = (due) => guard(async () => {
+      s.sourcesMessage = null;
+      try {
+        s.records = await checkAll(deps, {
+          due,
+          onProgress: (done, total) => {
+            s.sourcesMessage = { kind: "ok", text: t("result.checking", { done, total }) };
+            render();
+          }
+        });
+        s.sourcesMessage = { kind: "ok", text: t("result.checked", { count: s.records.length }) };
+        await loadRows();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onCheckAll = () => checkRecords();
+    const onCheckOne = (record) => guard(async () => {
+      s.sourcesMessage = null;
+      const checked = await checkSource(record, deps);
+      s.records = s.records.map((r) => r.id === record.id ? checked : r);
+      try {
+        await store.save(s.records);
+        await loadRows();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onUpdate = (record) => forSources(record.name, async () => {
+      const result = await updateSource(record, { ...deps, approveNow: s.keepEnabled });
+      s.sourcesMessage = resultMessage(result);
+      if (result.self) {
+        s.retired = true;
+        return;
+      }
+      await afterChange();
+    });
+    const onAutoApprove = (record, value) => guard(async () => {
+      s.autoFor = null;
+      s.sourcesMessage = null;
+      try {
+        await setAutoApprove(record, value, deps);
+        s.sourcesMessage = { kind: "ok", text: t(value ? "auto.on" : "auto.off", { name: record.name }) };
+        await afterChange();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
+      }
+    });
+    const onAutoUpdate = (record, value) => forSources(record.name, async () => {
+      await setAutoUpdate(record, value, deps);
+      await afterChange();
+    });
+    const onRevisions = (extension) => forSources(extension.name, async () => {
+      s.revisionsFor = { id: extension.id, list: extension.revisions ?? (await deps.client.list()).find((x) => x.id === extension.id)?.revisions ?? [] };
+    });
+    const onRollback = (extension, record, revision) => guard(async () => {
+      s.sourcesMessage = null;
+      s.revisionsFor = null;
+      try {
+        if (record) {
+          const result = await rollbackSource(record, revision.contentHash, deps);
+          s.sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash }) };
+        } else {
+          const result = await deps.client.rollback(extension.id, revision.contentHash);
+          s.sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.name, hash: result.contentHash }) };
+        }
+        await afterChange();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
+      }
+    });
+    const onDisable = (extension) => forSources(extension.name, async () => {
+      await disableExtension(extension, deps);
+      s.sourcesMessage = { kind: "ok", text: t("result.disabled", { name: extension.name }) };
+      await afterChange();
+    });
+    const onDelete = (extension) => guard(async () => {
+      s.deleting = null;
+      s.sourcesMessage = null;
+      try {
+        await deleteExtension(extension, deps);
+        s.sourcesMessage = { kind: "ok", text: t("result.deleted", { name: extension.name }) };
+        await afterChange();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
+      }
+    });
+    const onForget = (record, deleteFromEngine) => forSources(record.name, async () => {
+      await forgetSource(record, deps, deleteFromEngine);
+      s.sourcesMessage = { kind: "ok", text: t(deleteFromEngine ? "result.deleted" : "result.forgotten", { name: record.name }) };
+      await afterChange();
+    });
+    const onRefresh = () => guard(async () => {
+      s.sourcesMessage = null;
+      await afterChange();
+    });
+    const onUpdateAll = () => guard(async () => {
+      s.sourcesMessage = null;
+      const results = await updateAll(deps, {
+        keepEnabled: s.keepEnabled,
+        onProgress: (done, total) => {
+          s.sourcesMessage = { kind: "ok", text: t("result.checking", { done, total }) };
+          render();
+        }
+      });
+      if (results.length === 0) {
+        s.sourcesMessage = { kind: "warn", text: t("result.nothingToUpdate") };
+        return;
+      }
+      const lines = updateLines(results);
+      const ok = results.filter((r) => !(r.result instanceof Error)).length;
+      const selfDone = results.some((r) => !(r.result instanceof Error) && r.result.self);
+      s.sourcesMessage = { kind: ok === results.length ? "ok" : "warn", text: [t("result.updatedAll", { ok, total: results.length }), ...lines].join("\n") };
+      if (selfDone) {
+        s.retired = true;
+        return;
+      }
+      await afterChange();
+    });
+    const runAutoUpdates = (check) => guard(async () => {
+      if (!s.records.some((r) => r.autoUpdate)) return;
+      const results = await autoUpdate({ ...deps, approveNow: s.keepEnabled }, { check });
+      await host.storage.patch({ autoUpdatedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
+      });
+      if (!results.length) {
+        s.records = await store.load();
+        return;
+      }
+      const ok = results.filter((r) => !(r.result instanceof Error)).length;
+      const lines = updateLines(results);
+      s.sourcesMessage = { kind: ok === results.length ? "ok" : "warn", text: [t("autoUpdate.done", { ok, total: results.length }), ...lines].join("\n") };
+      await afterChange();
+    });
+    const importSummary = (result) => {
+      const r = { ...result };
+      return [
+        t("result.imported", r),
+        r.kept ? t("result.importKept", r) : "",
+        r.different ? t("result.importDifferent", r) : "",
+        r.ignored ? t("result.importIgnored", r) : ""
+      ].filter(Boolean).join(" ");
+    };
+    const onImport = (text) => guard(async () => {
+      s.sourcesMessage = null;
+      try {
+        const result = await importSources(text, store);
+        s.sourcesMessage = { kind: result.different || result.ignored ? "warn" : "ok", text: importSummary(result) };
+        s.transfer = null;
+        await afterChange();
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: e instanceof SyntaxError ? t("error.import.invalid") : describeError(e, t) };
+      }
+    });
+    const copy = (text) => {
+      void navigator.clipboard?.writeText(text).then(() => {
+        s.sourcesMessage = { kind: "ok", text: t("result.copied") };
+        render();
+      }).catch(() => {
+      });
+    };
+    const clearLog = () => guard(async () => {
+      await audit.clear();
+      await loadLog();
+    });
+    const setKeepEnabled = (value) => {
+      s.keepEnabled = value;
+      s.keepFor = null;
+      void host.storage.patch({ keepEnabled: s.keepEnabled }).catch(() => {
+      });
+      render();
+    };
+    const setAutoCheck = (value) => {
+      s.autoCheck = value;
+      void host.storage.patch({ autoCheck: s.autoCheck }).catch(() => {
+      });
+      render();
+    };
+    const reorganize = (next) => {
+      s.organize = next;
+      if (s.tagFilter && !s.organize.tags.some((x) => x.id === s.tagFilter)) s.tagFilter = null;
+      void host.storage.patch({ organize: s.organize }).catch(() => {
+      });
+      render();
+    };
+    const switchLang = () => {
+      core.i18n.lang = core.i18n.lang === "ko" ? "en" : "ko";
+      void host.storage.patch({ lang: core.i18n.lang }).catch(() => {
+      });
+      render();
+    };
+    const set = (patch) => {
+      Object.assign(s, patch);
+      render();
+    };
+    return {
+      loadPolicy,
+      loadRecords,
+      reconcileRecords,
+      loadLog,
+      loadRows,
+      onFetch,
+      onInstall,
+      cancelPreview,
+      startLink,
+      stopLink,
+      reinstall,
+      onCatalogInstall,
+      pickCatalog,
+      setBundleOpen,
+      checkCatalogQuietly,
+      checkRecords,
+      onCheckAll,
+      onCheckOne,
+      onUpdate,
+      onAutoApprove,
+      onAutoUpdate,
+      onRevisions,
+      onRollback,
+      onDisable,
+      onDelete,
+      onForget,
+      onRefresh,
+      onUpdateAll,
+      runAutoUpdates,
+      onImport,
+      copy,
+      clearLog,
+      setKeepEnabled,
+      setAutoCheck,
+      reorganize,
+      switchLang,
+      set
+    };
+  }
+
+  // src/ui/dom.ts
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === void 0 || value === false) continue;
+      if (typeof value === "function") node.addEventListener(key.replace(/^on/, "").toLowerCase(), value);
+      else if (value === true) node.setAttribute(key, "");
+      else node.setAttribute(key, value);
+    }
+    append(node, children);
+    return node;
+  }
+  function append(node, children) {
+    for (const child of children) {
+      if (child === null || child === void 0 || child === false) continue;
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+  }
+  function fragment(...children) {
+    const node = document.createDocumentFragment();
+    append(node, children);
+    return node;
+  }
+  function drow(term, ...detail) {
+    if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
+    return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
+  }
+  function help(text) {
+    return el("span", { class: "help", tabindex: "0", role: "img", "aria-label": text, title: text }, "?");
+  }
+  function fold(folds, key, summary, ...body) {
+    const node = el("details", { class: `fold ${key}`, open: folds.has(key) }, el("summary", {}, ...summary), ...body);
+    node.addEventListener("toggle", () => {
+      if (node.open) folds.add(key);
+      else folds.delete(key);
+    });
+    return node;
+  }
+  var message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
+  var checkedOf = (e) => e.target.checked;
+  var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
+  var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
+  var shortHash = (hash) => `${hash.slice(0, 23)}…`;
+  var textSize = (text) => formatBytes(new TextEncoder().encode(text).byteLength);
+
+  // src/ui/bundle.ts
+  function catalogRow(rows, entry) {
+    if (rows === null) return void 0;
+    const tracked = rows.find((r) => r.extension && r.record && isCatalogSource(entry, r.record.source));
+    if (tracked) return { row: tracked, ours: true };
+    const named = rows.find((r) => r.extension && r.extension.name.trim().toLowerCase() === entry.name.toLowerCase());
+    return named ? { row: named, ours: false } : null;
+  }
+  function catalogUpdates(rows) {
+    return CATALOG.filter((entry) => {
+      const found = catalogRow(rows, entry);
+      const state = found?.ours ? found.row.record?.latest?.state : void 0;
+      return state === "update" || state === "changed";
+    }).length;
+  }
+  function bundleWindow(v) {
+    const { s, t, act } = v;
+    if (!s.bundleOpen) return null;
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.setBundleOpen(false);
+      } },
+      el(
+        "div",
+        { class: "pop catalog", role: "dialog", "aria-modal": "true", "aria-label": t("bundle.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("bundle.title"), help(t("catalog.help"))),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), "data-focus": "bundle-close", onClick: () => act.setBundleOpen(false) }, "✕")
+        ),
+        el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => catalogItem(v, entry))),
+        el("div", { class: "msg loud" }, t("catalog.fullPage")),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "primary", type: "button", disabled: s.busy || !s.catalogPicked.size, onClick: () => void act.onCatalogInstall() }, t("catalog.install", { count: s.catalogPicked.size }))
+        ),
+        message(s.catalogMessage),
+        ...s.catalogResults.map((m) => message(m))
+      )
+    );
+    return back;
+  }
+  function catalogItem(v, entry) {
+    const { s, t, act, i18n } = v;
+    const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: s.busy, onChange: (e) => act.pickCatalog(entry.name, checkedOf(e)) });
+    box.checked = s.catalogPicked.has(entry.name);
+    const found = catalogRow(s.rows, entry);
+    const ext = found?.row.extension ?? null;
+    const willOff = s.catalogPicked.has(entry.name) && found?.ours && ext?.enabled ? el("div", { class: "line note" }, t(s.keepEnabled ? "catalog.staysOn" : "catalog.willOff")) : null;
+    return el(
+      "li",
+      {},
+      el("label", { class: "toggle" }, box, el("span", { class: "name" }, entry.name)),
+      " ",
+      catalogBadge(v, found),
+      el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
+      willOff
+    );
+  }
+  function catalogBadge({ t }, found) {
+    if (found === void 0) return el("span", { class: "badge" }, t("catalog.unknown"));
+    const ext = found?.row.extension;
+    if (!found || !ext) return el("span", { class: "badge off" }, t("catalog.missing"));
+    const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
+    const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
+    const version = ext.version ?? "";
+    const latest = found.ours ? found.row.record?.latest : void 0;
+    const update = latest && (latest.state === "update" || latest.state === "changed") ? el("span", { class: "badge approve" }, t("catalog.update", { version: latest.version ?? "?" })) : null;
+    return fragment(el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`), update);
+  }
+
+  // src/ui/context.ts
+  function createState() {
+    return {
+      busy: false,
+      policy: null,
+      policyError: null,
+      prepared: null,
+      pendingExistingId: null,
+      linking: null,
+      revisionsFor: null,
+      records: [],
+      rows: null,
+      rowsError: null,
+      codeFor: null,
+      deleting: null,
+      autoFor: null,
+      expanded: /* @__PURE__ */ new Set(),
+      keepEnabled: false,
+      keepFor: null,
+      installMessage: null,
+      catalogPicked: /* @__PURE__ */ new Set(),
+      catalogMessage: null,
+      catalogResults: [],
+      catalogRunning: false,
+      sourcesMessage: null,
+      urlInput: "",
+      transfer: null,
+      autoCheck: true,
+      autoUpdatedAt: 0,
+      organize: emptyOrganize(),
+      tagFilter: null,
+      bundleOpen: false,
+      folds: /* @__PURE__ */ new Set(),
+      logEntries: [],
+      reconcileMessage: null,
+      retired: false
+    };
+  }
+
+  // src/ui/install.ts
+  function gateLine({ s, t }) {
+    if (s.policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: s.policyError }));
+    if (!s.policy || s.policy.externalExtensionsEnabled) return null;
+    return el("p", { class: "msg warn" }, s.policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
+  }
+  function installSection({ s, t, act }) {
+    return el(
+      "section",
+      { class: "install" },
+      el("h3", {}, t("install.heading"), help(t("help.install"))),
+      s.linking ? el(
+        "div",
+        { class: "msg warn" },
+        t("install.linkHint", { name: s.linking.name }),
+        " ",
+        el("button", { class: "small", type: "button", onClick: act.stopLink }, t("install.cancelLink"))
+      ) : null,
+      el(
+        "form",
+        { class: "row", onSubmit: (e) => {
+          e.preventDefault();
+          void act.onFetch();
+        } },
+        el("input", {
+          type: "text",
+          class: "url",
+          "aria-label": t("install.heading"),
+          placeholder: t("install.placeholder"),
+          value: s.urlInput,
+          disabled: s.busy,
+          autocomplete: "off",
+          spellcheck: "false",
+          onInput: (e) => {
+            s.urlInput = e.target.value;
+          }
+        }),
+        el("button", { class: "primary", type: "submit", disabled: s.busy }, s.busy && !s.prepared && !s.catalogRunning ? t("install.fetching") : t("install.fetch"))
+      ),
+      message(s.installMessage)
+    );
+  }
+
+  // src/ui/item-row.ts
+  function itemRow(v, extension, record) {
+    const key = extension?.id ?? `record:${record?.id ?? ""}`;
+    const latest = record?.latest?.state;
+    const row = {
+      extension,
+      record,
+      key,
+      open: v.s.expanded.has(key),
+      name: extension?.name ?? record?.name ?? "?",
+      needsUpdate: latest === "update" || latest === "changed" || latest === "older"
+    };
+    const confirm = deleteConfirm(v, row);
+    return el(
+      "li",
+      { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
+      el("div", { class: "row between" }, rowTitle(v, row), el("div", { class: "row" }, ...primaryActions(v, row))),
+      ...rowStatus(v, row),
+      row.open && !confirm ? el("div", { class: "actions" }, ...moreActions(v, row)) : null,
+      confirm,
+      record && extension ? autoApproveConfirm(v, record, extension) : null,
+      extension ? revisionsBlock(v, extension, record) : null,
+      extension ? codeBlock(v, extension) : null
+    );
+  }
+  function rowTitle(v, { extension, record, key, name }) {
+    const { s, t } = v;
+    const version = extension?.version ?? record?.installedVersion ?? null;
+    const tagChips = (s.organize.of[key]?.tags ?? []).map((id) => s.organize.tags.find((x) => x.id === id)).filter((x) => !!x).map((x) => el("span", { class: "chip" }, `#${x.name}`));
+    return el(
+      "div",
+      {},
+      el("span", { class: "name" }, name),
+      " ",
+      el("span", { class: "muted" }, `v${version ?? "?"}`),
+      " ",
+      ...extension ? badges(v, extension) : [el("span", { class: "badge loud" }, t("log.missing"))],
+      record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null,
+      record?.autoUpdate ? el("span", { class: "badge" }, t("autoUpdate.badge")) : null,
+      ...tagChips
+    );
+  }
+  function badges({ t, host }, x) {
+    const list = [];
+    if (x.enabled) list.push(el("span", { class: "badge on" }, t("badge.enabled")));
+    else if (x.approvedHash === null) list.push(el("span", { class: "badge approve" }, t("badge.needsApproval")));
+    else list.push(el("span", { class: "badge off" }, t("badge.disabled")));
+    if (x.capabilities.includes("full_page_access")) list.push(el("span", { class: "badge loud" }, "full_page_access"));
+    if (x.runtime === "server") list.push(el("span", { class: "badge" }, t("preview.runtime.server")));
+    if (x.id === host.extensionId) list.push(el("span", { class: "badge" }, "Fetchy"));
+    return list;
+  }
+  function primaryActions({ s, t, act, render }, { extension, record, key, open, needsUpdate }) {
+    const primary = [];
+    if (record && extension && needsUpdate) primary.push(el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onUpdate(record) }, t("action.update")));
+    if (extension && !record) primary.push(el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.startLink(extension) }, t("untracked.link")));
+    if (record && !extension) primary.push(el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.reinstall(record) }, t("action.reinstall")));
+    const toggleMore = () => {
+      if (open) s.expanded.delete(key);
+      else s.expanded.add(key);
+      render();
+    };
+    primary.push(el("button", { class: "small", type: "button", onClick: toggleMore }, open ? t("action.less") : t("action.more")));
+    return primary;
+  }
+  function sourceText(record) {
+    if (!record) return null;
+    const branch = record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "";
+    return describeSource(record.source) + branch;
+  }
+  function stateText({ t }, record) {
+    if (record?.lastError) return t("sources.error", { error: record.lastError });
+    const latest = record?.latest;
+    if (!latest || latest.state === "up-to-date") return null;
+    return t(`sources.state.${latest.state}`, { version: latest.version ?? "?" });
+  }
+  function hashLine({ t }, extension, record) {
+    return el(
+      "div",
+      { class: "muted line" },
+      el("code", {}, extension?.contentHash ?? record?.installedHash ?? ""),
+      extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : "",
+      record?.lastCheckedAt ? ` · ${t("sources.lastCheck")} ${formatDate(record.lastCheckedAt)}` : "",
+      record ? null : ` · ${t("item.notFromFetchy")}`
+    );
+  }
+  function rowStatus(v, { extension, record, key, open, needsUpdate }) {
+    const stateClass = `state ${record?.latest?.state ?? ""}`;
+    const source = sourceText(record);
+    const state = stateText(v, record);
+    const loudState = record?.lastError || needsUpdate ? state : null;
+    const loud = loudState ? el("div", { class: "muted line" }, el("span", { class: stateClass }, loudState)) : null;
+    if (!open) return [loud];
+    const needsApproval = !!extension && extension.approvedHash === null && !extension.enabled;
+    return [
+      loud,
+      source || state ? el("div", { class: "muted line" }, source ?? "", source && state ? " · " : "", state && !loudState ? el("span", { class: stateClass }, state) : null) : null,
+      needsApproval ? el("div", { class: "muted line" }, v.t("item.approveHint")) : null,
+      organizeControls(v, key),
+      hashLine(v, extension, record)
+    ];
+  }
+  function organizeControls({ s, t, act }, key) {
+    const organize = s.organize;
+    if (!organize.folders.length && !organize.tags.length) return null;
+    const mine = organize.of[key];
+    const folder = organize.folders.length ? el(
+      "label",
+      { class: "toggle" },
+      t("organize.folder"),
+      " ",
+      el(
+        "select",
+        { "data-focus": `folder:${key}`, onChange: (e) => act.reorganize(setFolder(s.organize, key, e.target.value || null)) },
+        el("option", { value: "", selected: !mine?.folder }, t("organize.noFolder")),
+        ...organize.folders.map((f) => el("option", { value: f.id, selected: mine?.folder === f.id }, f.name))
+      )
+    ) : null;
+    const tags = organize.tags.map((x) => el("button", { class: `chip${mine?.tags?.includes(x.id) ? " on" : ""}`, type: "button", "aria-pressed": String(!!mine?.tags?.includes(x.id)), "data-focus": `tag:${key}:${x.id}`, onClick: () => act.reorganize(toggleTag(s.organize, key, x.id)) }, `#${x.name}`));
+    return el("div", { class: "actions" }, folder, ...tags);
+  }
+  function moreActions(v, { extension, record, needsUpdate }) {
+    const { s, t, act, host, render } = v;
+    const small = (label, onClick) => el("button", { class: "small", type: "button", disabled: s.busy, onClick }, label);
+    const more = [];
+    if (record && extension) {
+      more.push(small(t("action.check"), () => act.onCheckOne(record)));
+      if (!needsUpdate) more.push(small(t("action.update"), () => act.onUpdate(record)));
+      more.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, el("button", { class: "small", type: "button" }, t("action.open"))));
+    }
+    if (extension) {
+      const notSelf = extension.id !== host.extensionId;
+      more.push(small(t("action.code"), () => {
+        s.codeFor = s.codeFor === extension.id ? null : extension.id;
+        render();
+      }));
+      more.push(small(t("action.revisions"), () => act.onRevisions(extension)));
+      if (extension.enabled && notSelf) more.push(small(t("action.disable"), () => act.onDisable(extension)));
+      if (notSelf) more.push(small(t("action.delete"), () => act.set({ deleting: extension.id })));
+    }
+    if (record) more.push(small(t("action.forget.listOnly"), () => act.onForget(record, false)));
+    if (record && extension) more.push(...autoSwitches(v, record, extension));
+    return more;
+  }
+  function autoSwitches({ s, t, act, host, render }, record, extension) {
+    const switches = [];
+    if (extension.id !== host.extensionId) {
+      switches.push(el("label", { class: "toggle" }, el("input", {
+        type: "checkbox",
+        class: "auto-update",
+        "data-focus": `auto-update:${record.id}`,
+        checked: record.autoUpdate === true,
+        disabled: s.busy,
+        onChange: (e) => void act.onAutoUpdate(record, checkedOf(e))
+      }), t("autoUpdate.label"), help(t("help.autoUpdate"))));
+    }
+    switches.push(el("label", { class: "toggle" }, el("input", {
+      type: "checkbox",
+      class: "auto-approve",
+      "data-focus": `auto:${record.id}`,
+      checked: record.autoApprove === true,
+      disabled: s.busy,
+      onChange: (e) => {
+        if (!checkedOf(e)) {
+          void act.onAutoApprove(record, false);
+          return;
+        }
+        s.autoFor = { id: record.id, code: false, fullPage: false };
+        render();
+      }
+    }), t("auto.label"), help(t("help.autoApprove"))));
+    return switches;
+  }
+  function deleteConfirm({ s, t, act }, { extension, name }) {
+    if (!extension || s.deleting !== extension.id) return null;
+    return el(
+      "div",
+      { class: "actions" },
+      el("span", {}, t("action.confirmDelete", { name })),
+      el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onDelete(extension) }, t("action.delete")),
+      el("button", { class: "small", type: "button", onClick: () => act.set({ deleting: null }) }, t("action.cancel"))
+    );
+  }
+  function autoApproveConfirm({ s, t, act, render }, record, extension) {
+    if (!s.autoFor || s.autoFor.id !== record.id) return null;
+    const state = s.autoFor;
+    const fullPage = extension.capabilities.includes("full_page_access");
+    const ready = state.code && (!fullPage || state.fullPage);
+    const ack = (cls, label, onTick) => el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: cls, onChange: (e) => {
+      onTick(checkedOf(e));
+      render();
+    } }), label);
+    return el(
+      "div",
+      { class: "msg loud auto-confirm" },
+      el("div", {}, t("auto.confirm.title", { name: record.name })),
+      el("p", { class: "line", style: "font-weight:400" }, t("auto.confirm.body", { source: describeSource(record.source) })),
+      ack("ack-code", t("auto.ack.code"), (on) => {
+        state.code = on;
+      }),
+      fullPage ? ack("ack-full-page", t("auto.ack.fullPage"), (on) => {
+        state.fullPage = on;
+      }) : null,
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy || !ready, onClick: () => act.onAutoApprove(record, true) }, t("auto.confirm.on")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ autoFor: null }) }, t("action.cancel"))
+      )
+    );
+  }
+  function revisionsBlock({ s, t, act }, extension, record) {
+    if (!s.revisionsFor || s.revisionsFor.id !== extension.id) return null;
+    const list = s.revisionsFor.list;
+    return el(
+      "div",
+      { class: "revisions-box line" },
+      el("div", { class: "muted" }, t("revisions.heading")),
+      list.length === 0 ? el("p", { class: "muted" }, t("revisions.none")) : el("ul", { class: "revisions" }, ...list.map((rev) => el(
+        "li",
+        {},
+        t("revisions.item", { version: rev.version ?? "?", savedAt: formatDate(rev.savedAt) ?? rev.savedAt, hash: shortHash(rev.contentHash) }),
+        " ",
+        el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onRollback(extension, record, rev) }, t("action.rollback"))
+      ))),
+      el("button", { class: "small", type: "button", onClick: () => act.set({ revisionsFor: null }) }, t("close"))
+    );
+  }
+  function codeBlock({ s, t, act }, extension) {
+    if (s.codeFor !== extension.id) return null;
+    const roles = ["css", "js", "serverJs"].filter((role) => extension[role]);
+    return el(
+      "div",
+      { class: "line" },
+      ...roles.map((role) => el("details", { open: true }, el("summary", {}, `${role} (${textSize(extension[role] ?? "")})`), el("pre", { class: `code-${role}` }, extension[role] ?? ""))),
+      el("button", { class: "small", type: "button", onClick: () => act.set({ codeFor: null }) }, t("close"))
+    );
+  }
+
+  // src/ui/options.ts
+  function optionsFold(v) {
+    const { s, t, act } = v;
+    return fold(
+      s.folds,
+      "prefs",
+      [t("prefs.heading")],
+      el(
+        "div",
+        { class: "actions" },
+        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: s.autoCheck, onChange: (e) => act.setAutoCheck(checkedOf(e)) }), t("action.autoCheck"), help(t("help.autoCheck"))),
+        el("label", { class: "toggle" }, el("input", {
+          type: "checkbox",
+          class: "keep-enabled",
+          "data-focus": "keep-enabled",
+          checked: s.keepEnabled,
+          disabled: s.busy,
+          onChange: (e) => {
+            if (!checkedOf(e)) {
+              act.setKeepEnabled(false);
+              return;
+            }
+            act.set({ keepFor: { code: false } });
+          }
+        }), t("option.keepEnabled"), help(t("help.keepEnabled"))),
+        el("button", { class: "small", type: "button", disabled: s.records.length === 0, onClick: () => act.set({ transfer: { kind: "export", text: exportSources(s.records) } }) }, t("action.export")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: { kind: "import", text: "" } }) }, t("action.import")),
+        help(t("help.transfer")),
+        el("span", { class: "muted" }, t("anchor.hint"))
+      ),
+      keepConfirm(v),
+      transferBlock(v),
+      organizeBlock(v),
+      logBlock(v)
+    );
+  }
+  function keepConfirm({ s, t, act, render }) {
+    const keepFor = s.keepFor;
+    if (!keepFor) return null;
+    return el(
+      "div",
+      { class: "msg loud keep-confirm" },
+      el("div", {}, t("keep.confirm.title")),
+      el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
+      el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
+        if (s.keepFor) s.keepFor.code = checkedOf(e);
+        render();
+      } }), t("auto.ack.code")),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => act.setKeepEnabled(true) }, t("auto.confirm.on")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ keepFor: null }) }, t("action.cancel"))
+      )
+    );
+  }
+  function transferBlock({ s, t, act }) {
+    const transfer = s.transfer;
+    if (!transfer) return null;
+    if (transfer.kind === "export") {
+      const area2 = el("textarea", { readonly: true, "aria-label": t("action.export") }, transfer.text);
+      return el(
+        "div",
+        { class: "transfer" },
+        el("p", { class: "note" }, t("result.exported")),
+        area2,
+        el(
+          "div",
+          { class: "row" },
+          el("button", { class: "small", type: "button", onClick: () => {
+            area2.select();
+            act.copy(area2.value);
+          } }, t("action.copy")),
+          el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("close"))
+        )
+      );
+    }
+    const area = el("textarea", { placeholder: '{ "kind": "me-fetchy.sources", … }', "aria-label": t("action.import") }, transfer.text);
+    area.addEventListener("input", () => {
+      if (s.transfer?.kind === "import") s.transfer.text = area.value;
+    });
+    return el(
+      "div",
+      { class: "transfer" },
+      area,
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onImport(area.value) }, t("action.apply")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("action.cancel"))
+      )
+    );
+  }
+  function organizeBlock({ s, t, act }) {
+    const editor = (kind) => {
+      const newLabel = t(kind === "folders" ? "organize.newFolder" : "organize.newTag");
+      const box = el("input", { type: "text", "data-focus": `org-new:${kind}`, placeholder: newLabel, "aria-label": newLabel });
+      const add = () => {
+        if (box.value.trim()) act.reorganize(kind === "folders" ? addFolder(s.organize, box.value) : addTag(s.organize, box.value));
+      };
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          add();
+        }
+      });
+      return el(
+        "div",
+        {},
+        el("div", { class: "muted" }, t(kind === "folders" ? "organize.folders" : "organize.tags")),
+        el(
+          "ul",
+          { class: "org-list" },
+          ...s.organize[kind].map((x) => {
+            const name = el("input", { type: "text", value: x.name, "aria-label": x.name, "data-focus": `org:${x.id}` });
+            name.addEventListener("change", () => act.reorganize(rename(s.organize, kind, x.id, name.value)));
+            return el("li", {}, name, el("button", { class: "small", type: "button", onClick: () => act.reorganize(remove(s.organize, kind, x.id)) }, t("organize.delete")));
+          }),
+          el("li", {}, box, el("button", { class: "small", type: "button", onClick: add }, t("organize.add")))
+        )
+      );
+    };
+    return fold(s.folds, "organize", [t("organize.heading")], editor("folders"), editor("tags"));
+  }
+  function logBlock({ s, t, act }) {
+    const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
+    const empty = s.logEntries.length === 0;
+    return fold(
+      s.folds,
+      "log",
+      [t("log.heading"), help(t("help.log"))],
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small", type: "button", disabled: empty, onClick: () => act.copy(AuditLog.format(s.logEntries)) }, t("log.export")),
+        el("button", { class: "small", type: "button", disabled: empty, onClick: act.clearLog }, t("log.clear"))
+      ),
+      empty ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...s.logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
+    );
+  }
+
+  // src/ui/items.ts
+  var keyOf = (r) => r.extension?.id ?? `record:${r.record?.id ?? ""}`;
+  function itemsSection(v) {
+    const { s, t } = v;
+    const list = s.rows ?? s.records.map((record) => ({ extension: null, record }));
+    const shown = list.filter((r) => !s.tagFilter || s.organize.of[keyOf(r)]?.tags?.includes(s.tagFilter)).sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
+    return el(
+      "section",
+      { class: "items" },
+      el(
+        "div",
+        { class: "row between" },
+        el("h3", {}, t("items.heading"), help(t("help.items"))),
+        toolbar(v)
+      ),
+      tagFilterChips(v),
+      s.rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: s.rowsError })) : null,
+      list.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : null,
+      ...grouped(v, shown),
+      message(s.reconcileMessage),
+      message(s.sourcesMessage),
+      optionsFold(v)
+    );
+  }
+  function toolbar({ s, t, act }) {
+    const anyUpdate = s.records.some((r) => r.latest && r.latest.state !== "up-to-date" && r.latest.state !== "unknown");
+    return el(
+      "div",
+      { class: "row" },
+      el("button", { class: "small", type: "button", disabled: s.busy || s.records.length === 0, onClick: act.onCheckAll }, t("action.checkAll")),
+      el("button", { class: "small primary", type: "button", disabled: s.busy || !anyUpdate, onClick: act.onUpdateAll }, t("action.updateAll")),
+      el("button", { class: "small", type: "button", disabled: s.busy, title: t("action.refresh"), "aria-label": t("action.refresh"), onClick: act.onRefresh }, "↻")
+    );
+  }
+  function tagFilterChips({ s, t, act }) {
+    if (!s.organize.tags.length) return null;
+    return el(
+      "div",
+      { class: "chips" },
+      el("button", { class: `chip${s.tagFilter ? "" : " on"}`, type: "button", onClick: () => act.set({ tagFilter: null }) }, t("organize.allTags")),
+      ...s.organize.tags.map((x) => el("button", {
+        class: `chip${s.tagFilter === x.id ? " on" : ""}`,
+        type: "button",
+        "aria-pressed": String(s.tagFilter === x.id),
+        onClick: () => act.set({ tagFilter: s.tagFilter === x.id ? null : x.id })
+      }, `#${x.name}`))
+    );
+  }
+  function grouped(v, shown) {
+    const { s, t } = v;
+    const ul = (items) => el("ul", { class: "items" }, ...items.map((r) => itemRow(v, r.extension, r.record)));
+    const folders = s.organize.folders;
+    if (!folders.length) return shown.length ? [ul(shown)] : [];
+    const groups = [];
+    for (const f of folders) {
+      const inside = shown.filter((r) => s.organize.of[keyOf(r)]?.folder === f.id);
+      const box = fold(s.folds, `folder:${f.id}`, [f.name, el("span", { class: "muted" }, String(inside.length))], inside.length ? ul(inside) : el("p", { class: "muted" }, t("organize.empty")));
+      box.classList.add("folder");
+      groups.push(box);
+    }
+    const loose = shown.filter((r) => !folders.some((f) => s.organize.of[keyOf(r)]?.folder === f.id));
+    if (loose.length) groups.push(el("h3", {}, t("organize.noFolder")), ul(loose));
+    return groups;
+  }
+
+  // src/ui/preview.ts
+  function previewSection(v, p) {
+    const { s, t } = v;
+    const d = p.draft;
+    const view = p.engine;
+    return el(
+      "section",
+      { class: "preview" },
+      el("h3", {}, t("preview.heading")),
+      ...previewWarnings(v, p),
+      p.tracked && !s.pendingExistingId && !view ? el("p", { class: "note" }, t("preview.tracked", { name: p.tracked.name, version: p.tracked.installedVersion ?? "?" })) : null,
+      el(
+        "dl",
+        {},
+        drow(t("preview.name"), d.name, " ", el("span", { class: "muted" }, `v${d.version ?? t("preview.none")}`)),
+        drow(t("preview.description"), d.description || t("preview.none")),
+        drow(t("preview.capabilities"), d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
+        drow(t("preview.hash"), el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
+        view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
+        view ? drow(t("preview.changes"), changesBlock(v, p)) : null
+      ),
+      // where it comes from, what is in it and how big: there when wanted
+      packageDetails(v, p),
+      codeDetails(v, p),
+      p.pkg.readme ? el("details", { class: "readme" }, el("summary", {}, `${t("preview.readme")} (${p.pkg.readme.path})`), el("pre", { class: "readme" }, p.pkg.readme.text)) : null,
+      el("div", { class: "row", style: "margin-top:10px" }, ...previewButtons(v, p))
+    );
+  }
+  function previewWarnings(v, p) {
+    const warnings = packageWarnings(v, p);
+    if (p.engine) warnings.push(...engineWarnings(v, p));
+    else if (p.engineListError) warnings.push(el("p", { class: "note" }, v.t("preview.engine.unavailable", { error: describeError(p.engineListError, v.t) })));
+    return warnings;
+  }
+  var warn = (text) => el("div", { class: "msg warn" }, text);
+  function packageWarnings({ s, t }, p) {
+    const warnings = [];
+    if (p.fullPageAccess) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.fullPage")));
+    if (p.draft.runtime === "server") {
+      warnings.push(warn(t("warn.server")));
+      if (s.policy && !s.policy.serverSandboxAvailable) warnings.push(warn(t("warn.serverSandbox", { reason: s.policy.serverSandboxReason ?? "" })));
+    }
+    for (const w of p.pkg.normalized.warnings) {
+      if (w.code === "legacy-kind-full-page") warnings.push(warn(t("warn.legacyKind")));
+      if (w.code === "version-dropped") warnings.push(warn(t("warn.versionDropped", { value: w.value })));
+      if (w.code === "unknown-capabilities") warnings.push(warn(t("warn.unknownCaps", { values: w.values.join(", ") })));
+      if (w.code === "unknown-kind") warnings.push(warn(t("warn.unknownKind", { kind: w.kind })));
+    }
+    return warnings;
+  }
+  function engineWarnings({ t }, p) {
+    const view = p.engine;
+    if (!view) return [];
+    const d = p.draft;
+    const changed = !view.sameCode;
+    const warnings = [];
+    if (view.capabilitiesAdded.length) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.capabilitiesAdded", { values: view.capabilitiesAdded.join(", ") })));
+    if (view.capabilitiesRemoved.length) warnings.push(warn(t("warn.capabilitiesRemoved", { values: view.capabilitiesRemoved.join(", ") })));
+    if (changed && view.record.version !== null && view.record.version === d.version) warnings.push(warn(t("warn.sameVersionChanged", { version: d.version ?? "" })));
+    if (changed && view.editedInMarinara) warnings.push(warn(t("warn.editedInMarinara")));
+    if (view.runtimeDiffers) warnings.push(el("div", { class: "msg err", role: "alert" }, t("warn.runtimeDiffers", { before: view.record.runtime, after: d.runtime })));
+    if (changed && view.nameDiffers) warnings.push(warn(t("warn.nameDiffers", { before: view.record.name, after: d.name })));
+    return warnings;
+  }
+  function changesBlock({ t }, p) {
+    const view = p.engine;
+    if (!view) return null;
+    if (view.sameCode) return el("div", { class: "msg ok" }, t("preview.changes.none"));
+    const sideText = (side2, other) => side2 ? formatBytes(side2.bytes) : t(`preview.changes.${other}`);
+    return el("ul", { class: "changes" }, ...view.changes.map((c) => el(
+      "li",
+      {},
+      t("preview.changes.row", {
+        role: c.role,
+        before: sideText(c.before, "new"),
+        after: sideText(c.after, "removed"),
+        lines: c.changed ? t("preview.changes.lines", { added: c.added, removed: c.removed }) : t("preview.changes.same")
+      })
+    )));
+  }
+  function packageDetails({ t }, p) {
+    const link = el("a", { href: p.pkg.browseUrl, target: "_blank", rel: "noopener noreferrer" }, describeSource(p.source));
+    const files = el("ul", { class: "files" }, ...p.files.map((f) => el("li", {}, `${f.role}: ${f.path} (${formatBytes(f.bytes)}) `, el("code", {}, `sha256 ${f.sha256.slice(0, 16)}…`))));
+    return el(
+      "details",
+      {},
+      el("summary", {}, t("preview.details")),
+      el(
+        "dl",
+        {},
+        drow(t("preview.source"), link),
+        p.pkg.ref ? drow(t("preview.branch"), p.pkg.ref) : null,
+        drow(t("preview.runtime"), t(p.draft.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
+        drow(t("preview.files"), files),
+        drow(t("preview.downloaded"), formatBytes(p.pkg.downloadedBytes))
+      )
+    );
+  }
+  function codeDetails({ t }, p) {
+    const d = p.draft;
+    return el(
+      "details",
+      {},
+      el("summary", {}, t("preview.code")),
+      ...["css", "js", "serverJs"].filter((role) => d[role] !== null).map((role) => el("details", {}, el("summary", {}, `${role} (${textSize(d[role] ?? "")})`), el("pre", { class: `code-${role}` }, d[role] ?? "")))
+    );
+  }
+  function previewButtons(v, p) {
+    const { s, t, act } = v;
+    const view = p.engine;
+    const targetId = previewTarget(v, p);
+    const busyLabel = s.busy ? t("action.busy") : null;
+    const button = (label, onClick, primary = false) => el("button", { class: primary ? "primary" : void 0, type: "button", disabled: s.busy, onClick }, label);
+    const buttons = [];
+    if (view?.runtimeDiffers) {
+    } else if (targetId && view?.sameCode) {
+      buttons.push(button(busyLabel ?? t("action.link"), () => act.onInstall({ kind: "link", extensionId: targetId }), true));
+    } else if (targetId) {
+      buttons.push(button(busyLabel ?? updateLabel(v, p), () => act.onInstall({ kind: "update", extensionId: targetId }), true));
+      if (view && !view.sameCode && !s.pendingExistingId) buttons.push(button(t("action.link"), () => act.onInstall({ kind: "link", extensionId: targetId })));
+    } else {
+      buttons.push(button(busyLabel ?? t("action.install"), () => act.onInstall({ kind: "create" }), true));
+    }
+    buttons.push(button(t("action.cancel"), act.cancelPreview));
+    return buttons;
+  }
+  function previewTarget({ s }, p) {
+    return s.pendingExistingId ?? s.linking?.id ?? p.engine?.record.id ?? p.tracked?.extensionId ?? null;
+  }
+  function updateLabel({ s, t }, p) {
+    if (s.pendingExistingId) return t("action.update");
+    return t("action.updateTracked", { name: p.engine?.record.name ?? p.tracked?.name ?? s.linking?.name ?? "" });
+  }
+
+  // src/ui/style.ts
   var STYLE = `
 /* Marinara's own theme variables reach the shadow tree (custom properties cross
    the boundary), so colours, borders and the accent follow whatever theme the
@@ -2485,78 +3685,18 @@ details.folder > summary .muted { font-weight: 400; margin-left: 6px; }
 select { font: inherit; font-size: 12px; color: var(--fg); background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
 footer { margin-top: 20px; }
 `;
-  function el(tag, attrs = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-      if (value === void 0 || value === false) continue;
-      if (typeof value === "function") node.addEventListener(key.replace(/^on/, "").toLowerCase(), value);
-      else if (value === true) node.setAttribute(key, "");
-      else node.setAttribute(key, value);
-    }
-    append(node, children);
-    return node;
-  }
-  function append(node, children) {
-    for (const child of children) {
-      if (child === null || child === void 0 || child === false) continue;
-      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-    }
-  }
-  function fragment(...children) {
-    const node = document.createDocumentFragment();
-    append(node, children);
-    return node;
-  }
-  function drow(term, ...detail) {
-    if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
-    return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
-  }
-  function help(text) {
-    return el("span", { class: "help", tabindex: "0", role: "img", "aria-label": text, title: text }, "?");
-  }
-  var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
-  var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
-  var shortHash = (hash) => `${hash.slice(0, 23)}…`;
+
+  // src/ui.ts
+  var HOST_ELEMENT_ID = "me-fetchy";
+  var OPEN_CHECK_EVERY_MS = 30 * 6e4;
   function mountPanel(options) {
     const doc = options.document ?? document;
     const { host, client, store } = options;
     const deps = { fetch: host.fetch, client, store, selfId: host.extensionId };
     const i18n = createTranslator(detectLang(options.language ?? (typeof navigator !== "undefined" ? navigator.language : void 0)));
     const t = (key, params) => i18n.t(key, params);
+    const s = createState();
     let isOpen = false;
-    let busy = false;
-    let policy = null;
-    let policyError = null;
-    let prepared = null;
-    let pendingExistingId = null;
-    let linking = null;
-    let revisionsFor = null;
-    let records = [];
-    let rows = null;
-    let rowsError = null;
-    let codeFor = null;
-    let deleting = null;
-    let autoFor = null;
-    const expanded = /* @__PURE__ */ new Set();
-    let keepEnabled = false;
-    let keepFor = null;
-    let installMessage = null;
-    const catalogPicked = /* @__PURE__ */ new Set();
-    let catalogMessage = null;
-    let catalogResults = [];
-    let catalogRunning = false;
-    let sourcesMessage = null;
-    let urlInput = "";
-    let transfer = null;
-    let autoCheck = true;
-    let autoUpdatedAt = 0;
-    let organize = emptyOrganize();
-    let tagFilter = null;
-    let bundleOpen = false;
-    const folds = /* @__PURE__ */ new Set();
-    let logEntries = [];
-    let reconcileMessage = null;
-    let retired = false;
     const jsDigest = digestBackend() === "javascript";
     const audit = new AuditLog(host.storage);
     deps.audit = audit;
@@ -2571,8 +3711,8 @@ footer { margin-top: 20px; }
     panel.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      if (bundleOpen) {
-        bundleOpen = false;
+      if (s.bundleOpen) {
+        s.bundleOpen = false;
         render();
       } else close();
     });
@@ -2591,996 +3731,30 @@ footer { margin-top: 20px; }
       }
     };
     doc.addEventListener("keydown", onShortcut);
-    const guard = async (fn) => {
-      if (busy || retired) return;
-      busy = true;
-      render();
-      try {
-        await fn();
-      } finally {
-        busy = false;
+    const core = {
+      s,
+      host,
+      store,
+      deps,
+      audit,
+      i18n,
+      t,
+      panel,
+      render,
+      async guard(fn) {
+        if (s.busy || s.retired) return;
+        s.busy = true;
         render();
-      }
-    };
-    async function loadPolicy() {
-      try {
-        policy = await client.policy();
-        policyError = null;
-      } catch (e) {
-        policy = null;
-        policyError = describeError(e, t);
-      }
-    }
-    async function loadRecords() {
-      try {
-        records = await store.load();
-      } catch (e) {
-        records = [];
-        sourcesMessage = { kind: "err", text: describeError(e, t) };
-      }
-    }
-    async function reconcileRecords() {
-      try {
-        const changed = await reconcile(deps);
-        if (changed.some((r) => !r.lastError)) reconcileMessage = { kind: "ok", text: t("log.reconciled", { count: changed.filter((r) => !r.lastError).length }) };
-        if (changed.length) records = await store.load();
-      } catch {
-      }
-    }
-    async function loadLog() {
-      try {
-        logEntries = await audit.list();
-      } catch {
-        logEntries = [];
-      }
-    }
-    async function loadRows() {
-      try {
-        rows = await overview(deps);
-        rowsError = null;
-      } catch (e) {
-        rows = null;
-        rowsError = describeError(e, t);
-      }
-    }
-    const onFetch = () => guard(async () => {
-      prepared = null;
-      pendingExistingId = null;
-      installMessage = null;
-      try {
-        prepared = await prepare(urlInput, deps, { extensionId: linking?.id ?? null });
-      } catch (e) {
-        installMessage = { kind: "err", text: describeError(e, t) };
-      }
-    });
-    const afterChange = async () => {
-      await Promise.all([loadRecords(), loadRows(), loadLog()]);
-    };
-    function resultMessage(result) {
-      const params = { name: result.extension.name, hash: result.extension.contentHash, error: result.approveError ?? "" };
-      if (result.self) return { kind: "ok", text: t(result.approved ? "result.selfUpdatedOn" : "result.selfUpdated", params) };
-      if (result.mode.kind === "create") return { kind: "ok", text: t("result.created", params) };
-      if (!result.codeChanged) return { kind: "ok", text: t("result.linked", params) };
-      if (result.approved) return { kind: "ok", text: t("result.updatedAndOn", params) };
-      if (result.notApproved === "capabilities-grew") return { kind: "warn", text: t("result.notApproved.capabilities-grew", params) };
-      if (result.notApproved === "failed") return { kind: "err", text: t("result.notApproved.failed", params) };
-      return { kind: "ok", text: t("result.updated", params) };
-    }
-    const onAutoApprove = (record, value) => guard(async () => {
-      autoFor = null;
-      sourcesMessage = null;
-      try {
-        await setAutoApprove(record, value, deps);
-        sourcesMessage = { kind: "ok", text: t(value ? "auto.on" : "auto.off", { name: record.name }) };
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
-      }
-    });
-    const onInstall = (mode) => guard(async () => {
-      if (!prepared) return;
-      const name = prepared.draft.name;
-      try {
-        const result = await install(prepared, { ...deps, approveNow: keepEnabled }, mode);
-        installMessage = resultMessage(result);
-        prepared = null;
-        pendingExistingId = null;
-        linking = null;
-        urlInput = "";
-        if (result.self) {
-          retired = true;
-          return;
-        }
-        await afterChange();
-      } catch (e) {
-        if (e instanceof EngineApiError && e.code === "name-exists" && e.existingId) {
-          pendingExistingId = e.existingId;
-          installMessage = { kind: "warn", text: t("result.nameExists", { name }) };
-        } else {
-          installMessage = { kind: "err", text: describeError(e, t, { name }) };
-        }
-      }
-    });
-    const onCatalogInstall = () => guard(async () => {
-      const chosen = CATALOG.filter((e) => catalogPicked.has(e.name));
-      if (!chosen.length) return;
-      catalogResults = [];
-      catalogRunning = true;
-      let outcomes;
-      try {
-        outcomes = await installCatalog(chosen, { ...deps, approveNow: keepEnabled }, (done, total, entry) => {
-          catalogMessage = { kind: "info", text: t("catalog.progress", { name: entry.name, done: done + 1, total }) };
-          render();
-        });
-      } finally {
-        catalogRunning = false;
-      }
-      catalogResults = outcomes.map((o) => o.status === "done" ? resultMessage(o.result) : o.status === "skipped" ? { kind: o.reason === "current" ? "ok" : "warn", text: t(`catalog.skipped.${o.reason}`, { name: o.entry.name, input: o.entry.input }) } : o.status === "stopped" ? { kind: "warn", text: t("catalog.stopped", { name: o.entry.name }) } : { kind: "err", text: t("catalog.failed", { name: o.entry.name, error: describeError(o.error, t, { name: o.entry.name }) }) });
-      const ok = outcomes.filter((o) => o.status === "done" || o.status === "skipped" && o.reason === "current").length;
-      catalogMessage = { kind: ok === outcomes.length ? "ok" : "warn", text: t("catalog.done", { ok, total: outcomes.length }) };
-      if (outcomes.some((o) => o.status === "done" && o.result.codeChanged)) catalogResults.push({ kind: "info", text: t("catalog.reload") });
-      catalogPicked.clear();
-      for (const o of outcomes) if (o.status === "failed" || o.status === "stopped") catalogPicked.add(o.entry.name);
-      if (prepared && chosen.some((e) => e.name.toLowerCase() === prepared?.draft.name.trim().toLowerCase())) {
-        prepared = null;
-        pendingExistingId = null;
-      }
-      await afterChange();
-    });
-    const checkRecords = (due) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        records = await checkAll(deps, {
-          due,
-          onProgress: (done, total) => {
-            sourcesMessage = { kind: "ok", text: t("result.checking", { done, total }) };
-            render();
-          }
-        });
-        sourcesMessage = { kind: "ok", text: t("result.checked", { count: records.length }) };
-        await loadRows();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t) };
-      }
-    });
-    const onCheckAll = () => checkRecords();
-    const onCheckOne = (record) => guard(async () => {
-      sourcesMessage = null;
-      const checked = await checkSource(record, deps);
-      records = records.map((r) => r.id === record.id ? checked : r);
-      try {
-        await store.save(records);
-        await loadRows();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t) };
-      }
-    });
-    const onUpdate = (record) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        const result = await updateSource(record, { ...deps, approveNow: keepEnabled });
-        sourcesMessage = resultMessage(result);
-        if (result.self) {
-          retired = true;
-          return;
-        }
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
-      }
-    });
-    const recordFor = (extension, record) => record ?? {
-      id: `engine:${extension.id}`,
-      input: "",
-      source: { kind: "manifest-url", url: "" },
-      ref: null,
-      name: extension.name,
-      extensionId: extension.id,
-      installedVersion: extension.version,
-      installedHash: extension.contentHash,
-      installedAt: extension.installedAt,
-      lastCheckedAt: null,
-      latest: null,
-      lastError: null
-    };
-    const onRevisions = (extension) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        revisionsFor = { id: extension.id, list: extension.revisions ?? (await deps.client.list()).find((x) => x.id === extension.id)?.revisions ?? [] };
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
-      }
-    });
-    const onRollback = (extension, record, revision) => guard(async () => {
-      sourcesMessage = null;
-      revisionsFor = null;
-      try {
-        const stub = recordFor(extension, record);
-        if (record) {
-          const result = await rollbackSource(record, revision.contentHash, deps);
-          sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash }) };
-        } else {
-          const result = await deps.client.rollback(stub.extensionId, revision.contentHash);
-          sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.name, hash: result.contentHash }) };
-        }
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
-      }
-    });
-    const onDisable = (extension) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        await disableExtension(extension, deps);
-        sourcesMessage = { kind: "ok", text: t("result.disabled", { name: extension.name }) };
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
-      }
-    });
-    const onDelete = (extension) => guard(async () => {
-      deleting = null;
-      sourcesMessage = null;
-      try {
-        await deleteExtension(extension, deps);
-        sourcesMessage = { kind: "ok", text: t("result.deleted", { name: extension.name }) };
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: extension.name }) };
-      }
-    });
-    const onForget = (record, deleteFromEngine) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        await forgetSource(record, deps, deleteFromEngine);
-        sourcesMessage = { kind: "ok", text: t(deleteFromEngine ? "result.deleted" : "result.forgotten", { name: record.name }) };
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
-      }
-    });
-    const importSummary = (result) => {
-      const r = { ...result };
-      return [
-        t("result.imported", r),
-        r.kept ? t("result.importKept", r) : "",
-        r.different ? t("result.importDifferent", r) : "",
-        r.ignored ? t("result.importIgnored", r) : ""
-      ].filter(Boolean).join(" ");
-    };
-    const onImport = (text) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        const result = await importSources(text, store);
-        sourcesMessage = { kind: result.different || result.ignored ? "warn" : "ok", text: importSummary(result) };
-        transfer = null;
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: e instanceof SyntaxError ? t("error.import.invalid") : describeError(e, t) };
-      }
-    });
-    const onRefresh = () => guard(async () => {
-      sourcesMessage = null;
-      await afterChange();
-    });
-    const onUpdateAll = () => guard(async () => {
-      sourcesMessage = null;
-      const results = await updateAll(deps, {
-        keepEnabled,
-        onProgress: (done, total) => {
-          sourcesMessage = { kind: "ok", text: t("result.checking", { done, total }) };
+        try {
+          await fn();
+        } finally {
+          s.busy = false;
           render();
         }
-      });
-      if (results.length === 0) {
-        sourcesMessage = { kind: "warn", text: t("result.nothingToUpdate") };
-        return;
       }
-      const lines = results.map(({ record, result }) => t("result.updatedAllOne", { name: record.name, text: result instanceof Error ? describeError(result, t, { name: record.name }) : resultMessage(result).text }));
-      const ok = results.filter((r) => !(r.result instanceof Error)).length;
-      const selfDone = results.some((r) => !(r.result instanceof Error) && r.result.self);
-      sourcesMessage = { kind: ok === results.length ? "ok" : "warn", text: [t("result.updatedAll", { ok, total: results.length }), ...lines].join("\n") };
-      if (selfDone) {
-        retired = true;
-        return;
-      }
-      await afterChange();
-    });
-    const setKeepEnabled = (value) => {
-      keepEnabled = value;
-      keepFor = null;
-      void host.storage.patch({ keepEnabled }).catch(() => {
-      });
-      render();
     };
-    const startLink = (extension) => {
-      linking = extension;
-      prepared = null;
-      pendingExistingId = null;
-      installMessage = null;
-      urlInput = "";
-      render();
-      panel.querySelector("input.url")?.focus();
-    };
-    const switchLang = () => {
-      i18n.lang = i18n.lang === "ko" ? "en" : "ko";
-      void host.storage.patch({ lang: i18n.lang }).catch(() => {
-      });
-      render();
-    };
-    const onAutoUpdate = (record, value) => guard(async () => {
-      sourcesMessage = null;
-      try {
-        await setAutoUpdate(record, value, deps);
-        await afterChange();
-      } catch (e) {
-        sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
-      }
-    });
-    const runAutoUpdates = (check) => guard(async () => {
-      if (!records.some((r) => r.autoUpdate)) return;
-      const results = await autoUpdate({ ...deps, approveNow: keepEnabled }, { check });
-      await host.storage.patch({ autoUpdatedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
-      });
-      if (!results.length) {
-        records = await store.load();
-        return;
-      }
-      const ok = results.filter((r) => !(r.result instanceof Error)).length;
-      const lines = results.map(({ record, result }) => t("result.updatedAllOne", { name: record.name, text: result instanceof Error ? describeError(result, t, { name: record.name }) : resultMessage(result).text }));
-      sourcesMessage = { kind: ok === results.length ? "ok" : "warn", text: [t("autoUpdate.done", { ok, total: results.length }), ...lines].join("\n") };
-      await afterChange();
-    });
-    const setAutoCheck = (value) => {
-      autoCheck = value;
-      void host.storage.patch({ autoCheck }).catch(() => {
-      });
-      render();
-    };
-    const reorganize = (next) => {
-      organize = next;
-      if (tagFilter && !organize.tags.some((x) => x.id === tagFilter)) tagFilter = null;
-      void host.storage.patch({ organize }).catch(() => {
-      });
-      render();
-    };
-    function catalogUpdates() {
-      return CATALOG.filter((entry) => {
-        const found = catalogRow(entry);
-        const state = found?.ours ? found.row.record?.latest?.state : void 0;
-        return state === "update" || state === "changed";
-      }).length;
-    }
-    async function checkCatalogQuietly() {
-      const stale = (r) => !r.lastCheckedAt || Date.now() - Date.parse(r.lastCheckedAt) > 6 * 36e5;
-      const due = records.filter((r) => CATALOG.some((e) => isCatalogSource(e, r.source)) && stale(r));
-      if (!due.length || busy) return;
-      try {
-        for (const record of due) {
-          const checked = await checkSource(record, deps);
-          records = records.map((r) => r.id === record.id ? checked : r);
-        }
-        await store.save(records);
-        await loadRows();
-      } catch {
-      }
-    }
-    const message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
-    function gateLine() {
-      if (policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: policyError }));
-      if (!policy || policy.externalExtensionsEnabled) return null;
-      return el("p", { class: "msg warn" }, policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
-    }
-    function changesBlock(p) {
-      const view = p.engine;
-      if (!view) return null;
-      if (view.sameCode) return el("div", { class: "msg ok" }, t("preview.changes.none"));
-      const sideText = (s, other) => s ? formatBytes(s.bytes) : t(`preview.changes.${other}`);
-      return el("ul", { class: "changes" }, ...view.changes.map((c) => el(
-        "li",
-        {},
-        t("preview.changes.row", {
-          role: c.role,
-          before: sideText(c.before, "new"),
-          after: sideText(c.after, "removed"),
-          lines: c.changed ? t("preview.changes.lines", { added: c.added, removed: c.removed }) : t("preview.changes.same")
-        })
-      )));
-    }
-    function previewSection(p) {
-      const d = p.draft;
-      const view = p.engine;
-      const warnings = [];
-      if (p.fullPageAccess) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.fullPage")));
-      if (d.runtime === "server") {
-        warnings.push(el("div", { class: "msg warn" }, t("warn.server")));
-        if (policy && !policy.serverSandboxAvailable) warnings.push(el("div", { class: "msg warn" }, t("warn.serverSandbox", { reason: policy.serverSandboxReason ?? "" })));
-      }
-      for (const w of p.pkg.normalized.warnings) {
-        if (w.code === "legacy-kind-full-page") warnings.push(el("div", { class: "msg warn" }, t("warn.legacyKind")));
-        if (w.code === "version-dropped") warnings.push(el("div", { class: "msg warn" }, t("warn.versionDropped", { value: w.value })));
-        if (w.code === "unknown-capabilities") warnings.push(el("div", { class: "msg warn" }, t("warn.unknownCaps", { values: w.values.join(", ") })));
-        if (w.code === "unknown-kind") warnings.push(el("div", { class: "msg warn" }, t("warn.unknownKind", { kind: w.kind })));
-      }
-      if (view?.capabilitiesAdded.length) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.capabilitiesAdded", { values: view.capabilitiesAdded.join(", ") })));
-      if (view?.capabilitiesRemoved.length) warnings.push(el("div", { class: "msg warn" }, t("warn.capabilitiesRemoved", { values: view.capabilitiesRemoved.join(", ") })));
-      if (view && !view.sameCode && view.record.version !== null && view.record.version === d.version) warnings.push(el("div", { class: "msg warn" }, t("warn.sameVersionChanged", { version: d.version ?? "" })));
-      if (view?.editedInMarinara && !view.sameCode) warnings.push(el("div", { class: "msg warn" }, t("warn.editedInMarinara")));
-      if (view?.runtimeDiffers) warnings.push(el("div", { class: "msg err", role: "alert" }, t("warn.runtimeDiffers", { before: view.record.runtime, after: d.runtime })));
-      if (view?.nameDiffers && !view.sameCode) warnings.push(el("div", { class: "msg warn" }, t("warn.nameDiffers", { before: view.record.name, after: d.name })));
-      if (!view && p.engineListError) warnings.push(el("p", { class: "note" }, t("preview.engine.unavailable", { error: describeError(p.engineListError, t) })));
-      const link = el("a", { href: p.pkg.browseUrl, target: "_blank", rel: "noopener noreferrer" }, describeSource(p.source));
-      const files = el("ul", { class: "files" }, ...p.files.map((f) => el("li", {}, `${f.role}: ${f.path} (${formatBytes(f.bytes)}) `, el("code", {}, `sha256 ${f.sha256.slice(0, 16)}…`))));
-      const code = el(
-        "details",
-        {},
-        el("summary", {}, t("preview.code")),
-        ...["css", "js", "serverJs"].filter((role) => d[role] !== null).map((role) => el("details", {}, el("summary", {}, `${role} (${formatBytes(new TextEncoder().encode(d[role] ?? "").byteLength)})`), el("pre", { class: `code-${role}` }, d[role] ?? "")))
-      );
-      const targetId = pendingExistingId ?? linking?.id ?? view?.record.id ?? p.tracked?.extensionId ?? null;
-      const buttons = [];
-      const busyLabel = busy ? t("action.busy") : null;
-      if (view?.runtimeDiffers) {
-      } else if (targetId && view?.sameCode) {
-        buttons.push(el("button", { class: "primary", type: "button", disabled: busy, onClick: () => onInstall({ kind: "link", extensionId: targetId }) }, busyLabel ?? t("action.link")));
-      } else if (targetId) {
-        const label = pendingExistingId ? t("action.update") : t("action.updateTracked", { name: view?.record.name ?? p.tracked?.name ?? linking?.name ?? "" });
-        buttons.push(el("button", { class: "primary", type: "button", disabled: busy, onClick: () => onInstall({ kind: "update", extensionId: targetId }) }, busyLabel ?? label));
-        if (view && !view.sameCode && !pendingExistingId) {
-          buttons.push(el("button", { type: "button", disabled: busy, onClick: () => onInstall({ kind: "link", extensionId: targetId }) }, t("action.link")));
-        }
-      } else {
-        buttons.push(el("button", { class: "primary", type: "button", disabled: busy, onClick: () => onInstall({ kind: "create" }) }, busyLabel ?? t("action.install")));
-      }
-      buttons.push(el("button", { type: "button", disabled: busy, onClick: () => {
-        prepared = null;
-        pendingExistingId = null;
-        installMessage = null;
-        render();
-      } }, t("action.cancel")));
-      return el(
-        "section",
-        { class: "preview" },
-        el("h3", {}, t("preview.heading")),
-        ...warnings,
-        p.tracked && !pendingExistingId && !view ? el("p", { class: "note" }, t("preview.tracked", { name: p.tracked.name, version: p.tracked.installedVersion ?? "?" })) : null,
-        el(
-          "dl",
-          {},
-          drow(t("preview.name"), d.name, " ", el("span", { class: "muted" }, `v${d.version ?? t("preview.none")}`)),
-          drow(t("preview.description"), d.description || t("preview.none")),
-          drow(t("preview.capabilities"), d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
-          drow(t("preview.hash"), el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
-          view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
-          view ? drow(t("preview.changes"), changesBlock(p)) : null
-        ),
-        // where it comes from, what is in it and how big: there when wanted
-        el(
-          "details",
-          {},
-          el("summary", {}, t("preview.details")),
-          el(
-            "dl",
-            {},
-            drow(t("preview.source"), link),
-            p.pkg.ref ? drow(t("preview.branch"), p.pkg.ref) : null,
-            drow(t("preview.runtime"), t(d.runtime === "server" ? "preview.runtime.server" : "preview.runtime.client")),
-            drow(t("preview.files"), files),
-            drow(t("preview.downloaded"), formatBytes(p.pkg.downloadedBytes))
-          )
-        ),
-        code,
-        p.pkg.readme ? el("details", { class: "readme" }, el("summary", {}, `${t("preview.readme")} (${p.pkg.readme.path})`), el("pre", { class: "readme" }, p.pkg.readme.text)) : null,
-        el("div", { class: "row", style: "margin-top:10px" }, ...buttons)
-      );
-    }
-    function revisionsBlock(extension, record) {
-      if (!revisionsFor || revisionsFor.id !== extension.id) return null;
-      const list = revisionsFor.list;
-      return el(
-        "div",
-        { class: "revisions-box line" },
-        el("div", { class: "muted" }, t("revisions.heading")),
-        list.length === 0 ? el("p", { class: "muted" }, t("revisions.none")) : el("ul", { class: "revisions" }, ...list.map((rev) => el(
-          "li",
-          {},
-          t("revisions.item", { version: rev.version ?? "?", savedAt: formatDate(rev.savedAt) ?? rev.savedAt, hash: shortHash(rev.contentHash) }),
-          " ",
-          el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRollback(extension, record, rev) }, t("action.rollback"))
-        ))),
-        el("button", { class: "small", type: "button", onClick: () => {
-          revisionsFor = null;
-          render();
-        } }, t("close"))
-      );
-    }
-    function codeBlock(extension) {
-      if (codeFor !== extension.id) return null;
-      const roles = ["css", "js", "serverJs"].filter((role) => extension[role]);
-      return el(
-        "div",
-        { class: "line" },
-        ...roles.map((role) => el("details", { open: true }, el("summary", {}, `${role} (${formatBytes(new TextEncoder().encode(extension[role] ?? "").byteLength)})`), el("pre", { class: `code-${role}` }, extension[role] ?? ""))),
-        el("button", { class: "small", type: "button", onClick: () => {
-          codeFor = null;
-          render();
-        } }, t("close"))
-      );
-    }
-    function badges(x) {
-      const list = [];
-      if (x.enabled) list.push(el("span", { class: "badge on" }, t("badge.enabled")));
-      else if (x.approvedHash === null) list.push(el("span", { class: "badge approve" }, t("badge.needsApproval")));
-      else list.push(el("span", { class: "badge off" }, t("badge.disabled")));
-      if (x.capabilities.includes("full_page_access")) list.push(el("span", { class: "badge loud" }, "full_page_access"));
-      if (x.runtime === "server") list.push(el("span", { class: "badge" }, t("preview.runtime.server")));
-      if (x.id === host.extensionId) list.push(el("span", { class: "badge" }, "Fetchy"));
-      return list;
-    }
-    function autoApproveConfirm(record, extension) {
-      if (!autoFor || autoFor.id !== record.id) return null;
-      const state = autoFor;
-      const fullPage = extension.capabilities.includes("full_page_access");
-      const ready2 = state.code && (!fullPage || state.fullPage);
-      return el(
-        "div",
-        { class: "msg loud auto-confirm" },
-        el("div", {}, t("auto.confirm.title", { name: record.name })),
-        el("p", { class: "line", style: "font-weight:400" }, t("auto.confirm.body", { source: describeSource(record.source) })),
-        el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
-          state.code = e.target.checked;
-          render();
-        } }), t("auto.ack.code")),
-        fullPage ? el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-full-page", onChange: (e) => {
-          state.fullPage = e.target.checked;
-          render();
-        } }), t("auto.ack.fullPage")) : null,
-        el(
-          "div",
-          { class: "actions" },
-          el("button", { class: "small primary", type: "button", disabled: busy || !ready2, onClick: () => onAutoApprove(record, true) }, t("auto.confirm.on")),
-          el("button", { class: "small", type: "button", onClick: () => {
-            autoFor = null;
-            render();
-          } }, t("action.cancel"))
-        )
-      );
-    }
-    function itemRow(extension, record) {
-      const key = extension?.id ?? `record:${record?.id ?? ""}`;
-      const open2 = expanded.has(key);
-      const name = extension?.name ?? record?.name ?? "?";
-      const version = extension?.version ?? record?.installedVersion ?? null;
-      const needsUpdate = !!record?.latest && (record.latest.state === "update" || record.latest.state === "changed" || record.latest.state === "older");
-      const toggleMore = () => {
-        if (open2) expanded.delete(key);
-        else expanded.add(key);
-        render();
-      };
-      const primary = [];
-      if (record && extension && needsUpdate) primary.push(el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
-      if (extension && !record) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => startLink(extension) }, t("untracked.link")));
-      if (record && !extension) primary.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
-        urlInput = record.input;
-        prepared = null;
-        render();
-        void onFetch();
-      } }, t("action.reinstall")));
-      primary.push(el("button", { class: "small", type: "button", onClick: toggleMore }, open2 ? t("action.less") : t("action.more")));
-      const more = [];
-      if (open2) {
-        if (record && extension) {
-          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onCheckOne(record) }, t("action.check")));
-          if (!needsUpdate) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onUpdate(record) }, t("action.update")));
-          more.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, el("button", { class: "small", type: "button" }, t("action.open"))));
-        }
-        if (extension) {
-          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
-            codeFor = codeFor === extension.id ? null : extension.id;
-            render();
-          } }, t("action.code")));
-          more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onRevisions(extension) }, t("action.revisions")));
-          if (extension.enabled && extension.id !== host.extensionId) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onDisable(extension) }, t("action.disable")));
-          if (extension.id !== host.extensionId) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => {
-            deleting = extension.id;
-            render();
-          } }, t("action.delete")));
-        }
-        if (record) more.push(el("button", { class: "small", type: "button", disabled: busy, onClick: () => onForget(record, false) }, t("action.forget.listOnly")));
-        if (record && extension && extension.id !== host.extensionId) {
-          more.push(el("label", { class: "toggle" }, el("input", {
-            type: "checkbox",
-            class: "auto-update",
-            "data-focus": `auto-update:${record.id}`,
-            checked: record.autoUpdate === true,
-            disabled: busy,
-            onChange: (e) => void onAutoUpdate(record, e.target.checked)
-          }), t("autoUpdate.label"), help(t("help.autoUpdate"))));
-        }
-        if (record && extension) {
-          more.push(el("label", { class: "toggle" }, el("input", {
-            type: "checkbox",
-            class: "auto-approve",
-            "data-focus": `auto:${record.id}`,
-            checked: record.autoApprove === true,
-            disabled: busy,
-            onChange: (e) => {
-              const on = e.target.checked;
-              if (!on) {
-                void onAutoApprove(record, false);
-                return;
-              }
-              autoFor = { id: record.id, code: false, fullPage: false };
-              render();
-            }
-          }), t("auto.label"), help(t("help.autoApprove"))));
-        }
-      }
-      const confirm = extension && deleting === extension.id ? el(
-        "div",
-        { class: "actions" },
-        el("span", {}, t("action.confirmDelete", { name })),
-        el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onDelete(extension) }, t("action.delete")),
-        el("button", { class: "small", type: "button", onClick: () => {
-          deleting = null;
-          render();
-        } }, t("action.cancel"))
-      ) : null;
-      const sourceText = record ? describeSource(record.source) + (record.ref && !(record.source.kind === "github-repo" && record.source.ref) ? ` @${record.ref}` : "") : null;
-      const stateText = record?.lastError ? t("sources.error", { error: record.lastError }) : record?.latest && record.latest.state !== "up-to-date" ? t(`sources.state.${record.latest.state}`, { version: record.latest.version ?? "?" }) : null;
-      const orgKey = extension?.id ?? `record:${record?.id ?? ""}`;
-      const mine = organize.of[orgKey];
-      const tagChips = (mine?.tags ?? []).map((id) => organize.tags.find((x) => x.id === id)).filter((x) => !!x).map((x) => el("span", { class: "chip" }, `#${x.name}`));
-      const loudState = record?.lastError ? stateText : needsUpdate ? stateText : null;
-      return el(
-        "li",
-        { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
-        el(
-          "div",
-          { class: "row between" },
-          el(
-            "div",
-            {},
-            el("span", { class: "name" }, name),
-            " ",
-            el("span", { class: "muted" }, `v${version ?? "?"}`),
-            " ",
-            ...extension ? badges(extension) : [el("span", { class: "badge loud" }, t("log.missing"))],
-            record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null,
-            record?.autoUpdate ? el("span", { class: "badge" }, t("autoUpdate.badge")) : null,
-            ...tagChips
-          ),
-          el("div", { class: "row" }, ...primary)
-        ),
-        loudState ? el("div", { class: "muted line" }, el("span", { class: `state ${record?.latest?.state ?? ""}` }, loudState)) : null,
-        open2 && (sourceText || stateText) ? el("div", { class: "muted line" }, sourceText ?? "", sourceText && stateText ? " · " : "", stateText && !loudState ? el("span", { class: `state ${record?.latest?.state ?? ""}` }, stateText) : null) : null,
-        open2 && extension && extension.approvedHash === null && !extension.enabled ? el("div", { class: "muted line" }, t("item.approveHint")) : null,
-        open2 ? organizeControls(orgKey) : null,
-        open2 ? el(
-          "div",
-          { class: "muted line" },
-          el("code", {}, extension?.contentHash ?? record?.installedHash ?? ""),
-          extension ? ` · ${formatDate(extension.updatedAt) ?? ""}` : "",
-          record?.lastCheckedAt ? ` · ${t("sources.lastCheck")} ${formatDate(record.lastCheckedAt)}` : "",
-          record ? null : ` · ${t("item.notFromFetchy")}`
-        ) : null,
-        open2 && !confirm ? el("div", { class: "actions" }, ...more) : null,
-        confirm,
-        record && extension ? autoApproveConfirm(record, extension) : null,
-        extension ? revisionsBlock(extension, record) : null,
-        extension ? codeBlock(extension) : null
-      );
-    }
-    function catalogSection() {
-      if (!bundleOpen) return null;
-      const back = el(
-        "div",
-        { class: "pop-back", onClick: (e) => {
-          if (e.target === back) {
-            bundleOpen = false;
-            render();
-          }
-        } },
-        el(
-          "div",
-          { class: "pop catalog", role: "dialog", "aria-modal": "true", "aria-label": t("bundle.title") },
-          el(
-            "div",
-            { class: "pop-head" },
-            el("h3", {}, t("bundle.title"), help(t("catalog.help"))),
-            el("button", { class: "small", type: "button", "aria-label": t("close"), "data-focus": "bundle-close", onClick: () => {
-              bundleOpen = false;
-              render();
-            } }, "✕")
-          ),
-          ...catalogBody()
-        )
-      );
-      return back;
-    }
-    function catalogBody() {
-      return [
-        el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => {
-          const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: busy, onChange: (e) => {
-            if (e.target.checked) catalogPicked.add(entry.name);
-            else catalogPicked.delete(entry.name);
-            render();
-          } });
-          box.checked = catalogPicked.has(entry.name);
-          const found = catalogRow(entry);
-          const ext = found?.row.extension ?? null;
-          const willOff = catalogPicked.has(entry.name) && found?.ours && ext?.enabled ? el("div", { class: "line note" }, t(keepEnabled ? "catalog.staysOn" : "catalog.willOff")) : null;
-          return el(
-            "li",
-            {},
-            el("label", { class: "toggle" }, box, el("span", { class: "name" }, entry.name)),
-            " ",
-            catalogBadge(found),
-            el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
-            willOff
-          );
-        })),
-        el("div", { class: "msg loud" }, t("catalog.fullPage")),
-        el(
-          "div",
-          { class: "actions" },
-          el("button", { class: "primary", type: "button", disabled: busy || !catalogPicked.size, onClick: () => void onCatalogInstall() }, t("catalog.install", { count: catalogPicked.size }))
-        ),
-        message(catalogMessage),
-        ...catalogResults.map((m) => message(m))
-      ];
-    }
-    function catalogRow(entry) {
-      if (rows === null) return void 0;
-      const tracked = rows.find((r) => r.extension && r.record && isCatalogSource(entry, r.record.source));
-      if (tracked) return { row: tracked, ours: true };
-      const named = rows.find((r) => r.extension && r.extension.name.trim().toLowerCase() === entry.name.toLowerCase());
-      return named ? { row: named, ours: false } : null;
-    }
-    function catalogBadge(found) {
-      if (found === void 0) return el("span", { class: "badge" }, t("catalog.unknown"));
-      const ext = found?.row.extension;
-      if (!found || !ext) return el("span", { class: "badge off" }, t("catalog.missing"));
-      const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
-      const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
-      const version = ext.version ?? "";
-      const latest = found.ours ? found.row.record?.latest : void 0;
-      const update = latest && (latest.state === "update" || latest.state === "changed") ? el("span", { class: "badge approve" }, t("catalog.update", { version: latest.version ?? "?" })) : null;
-      return fragment(el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`), update);
-    }
-    function organizeControls(key) {
-      if (!organize.folders.length && !organize.tags.length) return null;
-      const mine = organize.of[key];
-      const folder = organize.folders.length ? el(
-        "label",
-        { class: "toggle" },
-        t("organize.folder"),
-        " ",
-        el(
-          "select",
-          { "data-focus": `folder:${key}`, onChange: (e) => reorganize(setFolder(organize, key, e.target.value || null)) },
-          el("option", { value: "", selected: !mine?.folder }, t("organize.noFolder")),
-          ...organize.folders.map((f) => el("option", { value: f.id, selected: mine?.folder === f.id }, f.name))
-        )
-      ) : null;
-      const tags = organize.tags.map((x) => el("button", { class: `chip${mine?.tags?.includes(x.id) ? " on" : ""}`, type: "button", "aria-pressed": String(!!mine?.tags?.includes(x.id)), "data-focus": `tag:${key}:${x.id}`, onClick: () => reorganize(toggleTag(organize, key, x.id)) }, `#${x.name}`));
-      return el("div", { class: "actions" }, folder, ...tags);
-    }
-    function itemsSection() {
-      const list = rows ?? records.map((record) => ({ extension: null, record }));
-      const keyOf = (r) => r.extension?.id ?? `record:${r.record?.id ?? ""}`;
-      const shown = list.filter((r) => !tagFilter || organize.of[keyOf(r)]?.tags?.includes(tagFilter)).sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
-      const ul = (items) => el("ul", { class: "items" }, ...items.map((r) => itemRow(r.extension, r.record)));
-      const grouped = [];
-      if (organize.folders.length) {
-        for (const f of organize.folders) {
-          const inside = shown.filter((r) => organize.of[keyOf(r)]?.folder === f.id);
-          const box = fold(`folder:${f.id}`, [f.name, el("span", { class: "muted" }, String(inside.length))], inside.length ? ul(inside) : el("p", { class: "muted" }, t("organize.empty")));
-          box.classList.add("folder");
-          grouped.push(box);
-        }
-        const loose = shown.filter((r) => !organize.folders.some((f) => organize.of[keyOf(r)]?.folder === f.id));
-        if (loose.length) grouped.push(el("h3", {}, t("organize.noFolder")), ul(loose));
-      } else if (shown.length) grouped.push(ul(shown));
-      return el(
-        "section",
-        { class: "items" },
-        el(
-          "div",
-          { class: "row between" },
-          el("h3", {}, t("items.heading"), help(t("help.items"))),
-          el(
-            "div",
-            { class: "row" },
-            el("button", { class: "small", type: "button", disabled: busy || records.length === 0, onClick: onCheckAll }, t("action.checkAll")),
-            el("button", { class: "small primary", type: "button", disabled: busy || !records.some((r) => r.latest && r.latest.state !== "up-to-date" && r.latest.state !== "unknown"), onClick: onUpdateAll }, t("action.updateAll")),
-            el("button", { class: "small", type: "button", disabled: busy, title: t("action.refresh"), "aria-label": t("action.refresh"), onClick: onRefresh }, "↻")
-          )
-        ),
-        organize.tags.length ? el(
-          "div",
-          { class: "chips" },
-          el("button", { class: `chip${tagFilter ? "" : " on"}`, type: "button", onClick: () => {
-            tagFilter = null;
-            render();
-          } }, t("organize.allTags")),
-          ...organize.tags.map((x) => el("button", { class: `chip${tagFilter === x.id ? " on" : ""}`, type: "button", "aria-pressed": String(tagFilter === x.id), onClick: () => {
-            tagFilter = tagFilter === x.id ? null : x.id;
-            render();
-          } }, `#${x.name}`))
-        ) : null,
-        rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: rowsError })) : null,
-        list.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : null,
-        ...grouped,
-        message(reconcileMessage),
-        message(sourcesMessage),
-        fold(
-          "prefs",
-          [t("prefs.heading")],
-          el(
-            "div",
-            { class: "actions" },
-            el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: autoCheck, onChange: (e) => setAutoCheck(e.target.checked) }), t("action.autoCheck"), help(t("help.autoCheck"))),
-            el("label", { class: "toggle" }, el("input", {
-              type: "checkbox",
-              class: "keep-enabled",
-              "data-focus": "keep-enabled",
-              checked: keepEnabled,
-              disabled: busy,
-              onChange: (e) => {
-                const on = e.target.checked;
-                if (!on) {
-                  setKeepEnabled(false);
-                  return;
-                }
-                keepFor = { code: false };
-                render();
-              }
-            }), t("option.keepEnabled"), help(t("help.keepEnabled"))),
-            el("button", { class: "small", type: "button", disabled: records.length === 0, onClick: () => {
-              transfer = { kind: "export", text: exportSources(records) };
-              render();
-            } }, t("action.export")),
-            el("button", { class: "small", type: "button", onClick: () => {
-              transfer = { kind: "import", text: "" };
-              render();
-            } }, t("action.import")),
-            help(t("help.transfer")),
-            el("span", { class: "muted" }, t("anchor.hint"))
-          ),
-          keepFor ? el(
-            "div",
-            { class: "msg loud keep-confirm" },
-            el("div", {}, t("keep.confirm.title")),
-            el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
-            el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
-              if (keepFor) keepFor.code = e.target.checked;
-              render();
-            } }), t("auto.ack.code")),
-            el(
-              "div",
-              { class: "actions" },
-              el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => setKeepEnabled(true) }, t("auto.confirm.on")),
-              el("button", { class: "small", type: "button", onClick: () => {
-                keepFor = null;
-                render();
-              } }, t("action.cancel"))
-            )
-          ) : null,
-          transferBlock(),
-          organizeBlock(),
-          logBlock()
-        )
-      );
-    }
-    function organizeBlock() {
-      const editor = (kind) => {
-        const items = organize[kind];
-        const box = el("input", { type: "text", "data-focus": `org-new:${kind}`, placeholder: t(kind === "folders" ? "organize.newFolder" : "organize.newTag"), "aria-label": t(kind === "folders" ? "organize.newFolder" : "organize.newTag") });
-        const add = () => {
-          if (box.value.trim()) reorganize(kind === "folders" ? addFolder(organize, box.value) : addTag(organize, box.value));
-        };
-        box.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            add();
-          }
-        });
-        return el(
-          "div",
-          {},
-          el("div", { class: "muted" }, t(kind === "folders" ? "organize.folders" : "organize.tags")),
-          el(
-            "ul",
-            { class: "org-list" },
-            ...items.map((x) => {
-              const name = el("input", { type: "text", value: x.name, "aria-label": x.name, "data-focus": `org:${x.id}` });
-              name.addEventListener("change", () => reorganize(rename(organize, kind, x.id, name.value)));
-              return el("li", {}, name, el("button", { class: "small", type: "button", onClick: () => reorganize(remove(organize, kind, x.id)) }, t("organize.delete")));
-            }),
-            el("li", {}, box, el("button", { class: "small", type: "button", onClick: add }, t("organize.add")))
-          )
-        );
-      };
-      return fold("organize", [t("organize.heading")], editor("folders"), editor("tags"));
-    }
-    function transferBlock() {
-      if (!transfer) return null;
-      if (transfer.kind === "export") {
-        const area2 = el("textarea", { readonly: true, "aria-label": t("action.export") }, transfer.text);
-        return el(
-          "div",
-          { class: "transfer" },
-          el("p", { class: "note" }, t("result.exported")),
-          area2,
-          el(
-            "div",
-            { class: "row" },
-            el("button", { class: "small", type: "button", onClick: () => {
-              area2.select();
-              void navigator.clipboard?.writeText(area2.value).then(() => {
-                sourcesMessage = { kind: "ok", text: t("result.copied") };
-                render();
-              }).catch(() => {
-              });
-            } }, t("action.copy")),
-            el("button", { class: "small", type: "button", onClick: () => {
-              transfer = null;
-              render();
-            } }, t("close"))
-          )
-        );
-      }
-      const area = el("textarea", { placeholder: '{ "kind": "me-fetchy.sources", … }', "aria-label": t("action.import") }, transfer.text);
-      area.addEventListener("input", () => {
-        if (transfer?.kind === "import") transfer.text = area.value;
-      });
-      return el(
-        "div",
-        { class: "transfer" },
-        area,
-        el(
-          "div",
-          { class: "row" },
-          el("button", { class: "small primary", type: "button", disabled: busy, onClick: () => onImport(area.value) }, t("action.apply")),
-          el("button", { class: "small", type: "button", onClick: () => {
-            transfer = null;
-            render();
-          } }, t("action.cancel"))
-        )
-      );
-    }
-    function fold(key, summary, ...body) {
-      const node = el("details", { class: `fold ${key}`, open: folds.has(key) }, el("summary", {}, ...summary), ...body);
-      node.addEventListener("toggle", () => {
-        if (node.open) folds.add(key);
-        else folds.delete(key);
-      });
-      return node;
-    }
-    function logBlock() {
-      const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
-      return fold(
-        "log",
-        [t("log.heading"), help(t("help.log"))],
-        el(
-          "div",
-          { class: "actions" },
-          el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => {
-            void navigator.clipboard?.writeText(AuditLog.format(logEntries)).then(() => {
-              sourcesMessage = { kind: "ok", text: t("result.copied") };
-              render();
-            }).catch(() => {
-            });
-          } }, t("log.export")),
-          el("button", { class: "small", type: "button", disabled: logEntries.length === 0, onClick: () => guard(async () => {
-            await audit.clear();
-            await loadLog();
-          }) }, t("log.clear"))
-        ),
-        logEntries.length === 0 ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
-      );
-    }
+    const act = createActions(core);
+    const view = { ...core, act };
     function render() {
       const key = focusKey;
       renderPanel();
@@ -3588,97 +3762,60 @@ footer { margin-top: 20px; }
     }
     function renderPanel() {
       backdrop.hidden = !isOpen;
-      const updates = catalogUpdates();
       panel.replaceChildren(fragment(
-        el(
-          "header",
-          {},
-          el(
-            "h2",
-            {},
-            t("title"),
-            el("span", { class: "ver" }, `v${options.version}`),
-            jsDigest ? el("span", { class: "badge digest", title: t("badge.jsDigest.title") }, t("badge.jsDigest")) : null
-          ),
-          el(
-            "div",
-            { class: "tools" },
-            el("button", {
-              class: `small bundle${updates ? " has-update" : ""}`,
-              type: "button",
-              "data-focus": "bundle",
-              title: updates ? t("bundle.hasUpdate") : t("bundle.title"),
-              "aria-haspopup": "dialog",
-              onClick: () => {
-                bundleOpen = true;
-                render();
-              }
-            }, el("span", { class: "cake", "aria-hidden": "true" }, "🍰"), " ", t("bundle.button"), updates ? el("span", { class: "dot", role: "img", "aria-label": t("bundle.hasUpdate") }) : null),
-            el("button", { class: "small", type: "button", onClick: switchLang }, t("lang.switch")),
-            el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: () => close() }, "✕")
-          )
-        ),
-        gateLine(),
-        el(
-          "section",
-          { class: "install" },
-          el("h3", {}, t("install.heading"), help(t("help.install"))),
-          linking ? el(
-            "div",
-            { class: "msg warn" },
-            t("install.linkHint", { name: linking.name }),
-            " ",
-            el("button", { class: "small", type: "button", onClick: () => {
-              linking = null;
-              prepared = null;
-              render();
-            } }, t("install.cancelLink"))
-          ) : null,
-          el(
-            "form",
-            { class: "row", onSubmit: (e) => {
-              e.preventDefault();
-              void onFetch();
-            } },
-            el("input", {
-              type: "text",
-              class: "url",
-              "aria-label": t("install.heading"),
-              placeholder: t("install.placeholder"),
-              value: urlInput,
-              disabled: busy,
-              autocomplete: "off",
-              spellcheck: "false",
-              onInput: (e) => {
-                urlInput = e.target.value;
-              }
-            }),
-            el("button", { class: "primary", type: "submit", disabled: busy }, busy && !prepared && !catalogRunning ? t("install.fetching") : t("install.fetch"))
-          ),
-          message(installMessage)
-        ),
-        prepared ? previewSection(prepared) : null,
-        itemsSection(),
-        catalogSection()
+        header(),
+        gateLine(view),
+        installSection(view),
+        s.prepared ? previewSection(view, s.prepared) : null,
+        itemsSection(view),
+        bundleWindow(view)
       ));
+    }
+    function header() {
+      const updates = catalogUpdates(s.rows);
+      return el(
+        "header",
+        {},
+        el(
+          "h2",
+          {},
+          t("title"),
+          el("span", { class: "ver" }, `v${options.version}`),
+          jsDigest ? el("span", { class: "badge digest", title: t("badge.jsDigest.title") }, t("badge.jsDigest")) : null
+        ),
+        el(
+          "div",
+          { class: "tools" },
+          el("button", {
+            class: `small bundle${updates ? " has-update" : ""}`,
+            type: "button",
+            "data-focus": "bundle",
+            title: updates ? t("bundle.hasUpdate") : t("bundle.title"),
+            "aria-haspopup": "dialog",
+            onClick: () => act.setBundleOpen(true)
+          }, el("span", { class: "cake", "aria-hidden": "true" }, "🍰"), " ", t("bundle.button"), updates ? el("span", { class: "dot", role: "img", "aria-label": t("bundle.hasUpdate") }) : null),
+          el("button", { class: "small", type: "button", onClick: act.switchLang }, t("lang.switch")),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: () => close() }, "✕")
+        )
+      );
     }
     function open() {
       isOpen = true;
       render();
       panel.focus();
-      void Promise.all([loadPolicy(), loadRows(), loadLog(), reconcileRecords()]).then(() => {
+      void Promise.all([act.loadPolicy(), act.loadRows(), act.loadLog(), act.reconcileRecords()]).then(() => {
         render();
         const due = (r) => checkedLongAgo(r, /* @__PURE__ */ new Date(), OPEN_CHECK_EVERY_MS);
-        if (autoCheck && records.some(due) && !busy) void checkRecords(due).then(() => runAutoUpdates(false));
-        else void checkCatalogQuietly().then(() => render());
+        if (s.autoCheck && s.records.some(due) && !s.busy) void act.checkRecords(due).then(() => act.runAutoUpdates(false));
+        else void act.checkCatalogQuietly().then(() => render());
       });
     }
     function close() {
       isOpen = false;
-      bundleOpen = false;
-      reconcileMessage = null;
-      catalogMessage = null;
-      catalogResults = [];
+      s.bundleOpen = false;
+      s.reconcileMessage = null;
+      s.catalogMessage = null;
+      s.catalogResults = [];
       render();
     }
     function toggle() {
@@ -3689,15 +3826,15 @@ footer { margin-top: 20px; }
       try {
         const data = await host.storage.get();
         if (data.lang === "ko" || data.lang === "en") i18n.lang = data.lang;
-        autoCheck = data.autoCheck !== false;
-        autoUpdatedAt = typeof data.autoUpdatedAt === "string" ? Date.parse(data.autoUpdatedAt) || 0 : 0;
-        keepEnabled = data.keepEnabled === true;
-        organize = normalizeOrganize(data.organize);
+        s.autoCheck = data.autoCheck !== false;
+        s.autoUpdatedAt = typeof data.autoUpdatedAt === "string" ? Date.parse(data.autoUpdatedAt) || 0 : 0;
+        s.keepEnabled = data.keepEnabled === true;
+        s.organize = normalizeOrganize(data.organize);
       } catch {
       }
-      await Promise.all([loadPolicy(), loadRecords()]);
+      await Promise.all([act.loadPolicy(), act.loadRecords()]);
       render();
-      if (records.some((r) => r.autoUpdate) && Date.now() - autoUpdatedAt > 6 * 36e5) void runAutoUpdates(true);
+      if (s.records.some((r) => r.autoUpdate) && Date.now() - s.autoUpdatedAt > 6 * 36e5) void act.runAutoUpdates(true);
     })();
     render();
     return {
@@ -3719,7 +3856,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.8.2" : "0.0.0";
+  var VERSION = true ? "0.8.3" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
