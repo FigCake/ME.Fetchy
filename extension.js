@@ -1,4 +1,4 @@
-/*! Fetchy 0.8.1 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.8.2 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: MIT */
@@ -338,6 +338,36 @@
       autoApprove: value.autoApprove === true,
       autoUpdate: value.autoUpdate === true
     };
+  }
+  var sameParsedSource = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  function mergeImported(existing, incoming) {
+    const records = [...existing];
+    const byExtension = new Map(records.map((r) => [r.extensionId, r]));
+    const ids = new Set(records.map((r) => r.id));
+    let added = 0, kept = 0, different = 0;
+    for (const record of incoming) {
+      const current = byExtension.get(record.extensionId);
+      if (current) {
+        kept++;
+        if (!sameParsedSource(current.source, record.source)) different++;
+        continue;
+      }
+      const fresh = {
+        ...record,
+        // the file's id may belong to another extension here
+        id: ids.has(record.id) ? newRecordId() : record.id,
+        lastCheckedAt: null,
+        latest: null,
+        lastError: null,
+        autoApprove: false,
+        autoUpdate: false
+      };
+      records.push(fresh);
+      byExtension.set(fresh.extensionId, fresh);
+      ids.add(fresh.id);
+      added++;
+    }
+    return { records, added, kept, different };
   }
   function newRecordId() {
     const bytes = new Uint8Array(8);
@@ -833,6 +863,19 @@
       return null;
     }
   }
+  var COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  async function commitOf(owner, repo, ref, options, budget) {
+    if (COMMIT_SHA.test(ref)) return ref;
+    const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodedRef}`;
+    try {
+      const bytes = await fetchBytes(url, { ...options, freshest: false }, 1024, budget, "application/vnd.github.sha");
+      const sha = bytes === null ? "" : new TextDecoder("utf-8").decode(bytes).trim().toLowerCase();
+      return COMMIT_SHA.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  }
   async function readConsistently(manifestUrl, manifestText, reread, read) {
     let text = manifestText;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -858,26 +901,38 @@
         const readManifest = () => fetchText(manifestUrl, options, LIMITS.textFileBytes, budget);
         const text = await readManifest();
         if (text == null) continue;
-        const read = async (path) => {
+        const readerAt = (at, opts) => async (path) => {
           const clean = normalizePath(path);
           if (!clean) return null;
           for (const candidate of dir ? [`${dir}/${clean}`, clean] : [clean]) {
-            const found = await fetchText(rawFileUrl(source.owner, source.repo, ref, candidate), options, LIMITS.textFileBytes, budget);
+            const found = await fetchText(rawFileUrl(source.owner, source.repo, at, candidate), opts, LIMITS.textFileBytes, budget);
             if (found != null) return found;
           }
           return null;
         };
-        const { manifest, normalized } = await readConsistently(manifestUrl, text, readManifest, read);
-        return {
+        const readmeAt = (at, opts) => options.readme === false ? null : readme((name) => fetchText(rawFileUrl(source.owner, source.repo, at, dir ? `${dir}/${name}` : name), opts, MAX_README_BYTES, budget));
+        const done = async (manifest2, normalized2, commit2, at, opts) => ({
           source,
           ref,
+          commit: commit2,
           manifestUrl,
-          manifest,
-          normalized,
+          manifest: manifest2,
+          normalized: normalized2,
           browseUrl: browseUrl(source, ref),
-          readme: options.readme === false ? null : await readme((name) => fetchText(rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${name}` : name), options, MAX_README_BYTES, budget)),
+          readme: await readmeAt(at, opts),
           downloadedBytes: budget.used
-        };
+        });
+        const commit = options.pinCommit ? await commitOf(source.owner, source.repo, ref, options, budget) : null;
+        if (commit) {
+          const atCommit = { ...options, freshest: false };
+          const pinnedText = commit === ref ? text : await fetchText(rawFileUrl(source.owner, source.repo, commit, dir ? `${dir}/${filename}` : filename), atCommit, LIMITS.textFileBytes, budget);
+          if (pinnedText != null) {
+            const manifest2 = parseJson(pinnedText, manifestUrl);
+            return done(manifest2, await normalizeManifest(manifest2, readerAt(commit, atCommit)), commit, commit, atCommit);
+          }
+        }
+        const { manifest, normalized } = await readConsistently(manifestUrl, text, readManifest, readerAt(ref, options));
+        return done(manifest, normalized, null, ref, options);
       }
       if (!source.ref && i === candidates.length - 1 && candidates.length === DEFAULT_BRANCHES.length) {
         const branch = await defaultBranch(source.owner, source.repo, options, budget);
@@ -899,6 +954,7 @@
     return {
       source,
       ref: null,
+      commit: null,
       manifestUrl: source.url,
       manifest,
       normalized,
@@ -957,6 +1013,7 @@
     return {
       source,
       ref: null,
+      commit: null,
       manifest,
       normalized,
       manifestUrl,
@@ -1259,7 +1316,7 @@
   }
   async function prepare(input, deps, options = {}) {
     const source = parseSourceUrl(input);
-    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest, readme: options.readme });
+    const pkg = await fetchPackage(source, { fetch: deps.fetch, freshest: options.freshest, readme: options.readme, pinCommit: true });
     const draft = pkg.normalized.draft;
     const contentHash = await engineContentHash(draft);
     const records = await deps.store.load();
@@ -1397,7 +1454,7 @@
   async function checkSource(record, deps) {
     const now = nowOf(deps).toISOString();
     try {
-      const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true });
+      const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false });
       const hash = await engineContentHash(pkg.normalized.draft);
       const state = updateState(
         { version: record.installedVersion, hash: record.installedHash },
@@ -1421,24 +1478,29 @@
       return { ...record, lastCheckedAt: now, lastError: e instanceof Error ? e.message : String(e) };
     }
   }
+  function checkedLongAgo(record, now, maxAgeMs) {
+    const at = record.lastCheckedAt ? Date.parse(record.lastCheckedAt) : NaN;
+    return !Number.isFinite(at) || at > now.getTime() || now.getTime() - at > maxAgeMs;
+  }
   async function checkAll(deps, options = {}) {
     const records = await deps.store.load();
-    const checked = new Array(records.length);
+    const checked = [...records];
+    const todo = records.map((r, index) => ({ r, index })).filter(({ r }) => options.due?.(r) ?? true);
     let next = 0, done = 0;
     const worker = async () => {
-      while (next < records.length) {
-        const index = next++;
-        const result = await checkSource(records[index], deps);
+      while (next < todo.length) {
+        const { r, index } = todo[next++];
+        const result = await checkSource(r, deps);
         checked[index] = result;
-        options.onProgress?.(++done, records.length, result);
+        options.onProgress?.(++done, todo.length, result);
       }
     };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 3, records.length)) }, worker));
-    await deps.store.save(checked);
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 3, todo.length)) }, worker));
+    if (todo.length) await deps.store.save(checked);
     return checked;
   }
   async function updateSource(record, deps) {
-    const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true });
+    const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false, pinCommit: true });
     const draft = pkg.normalized.draft;
     const contentHash = await engineContentHash(draft);
     const { view, error } = await engineView(deps.client, draft, contentHash, record, record.extensionId);
@@ -1579,11 +1641,9 @@
     const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray(parsed.sources) ? parsed.sources : null;
     if (!list) throw new SyntaxError("not an exported source list");
     const incoming = list.map(parseRecord).filter((r) => r !== null);
-    const existing = await store.load();
-    const byExtension = new Map(existing.map((r) => [r.extensionId, r]));
-    for (const record of incoming) byExtension.set(record.extensionId, { ...record, id: byExtension.get(record.extensionId)?.id ?? record.id });
-    await store.save([...byExtension.values()]);
-    return { imported: incoming.length, ignored: list.length - incoming.length };
+    const merged = mergeImported(await store.load(), incoming);
+    if (merged.added) await store.save(merged.records);
+    return { imported: merged.added, kept: merged.kept, different: merged.different, ignored: list.length - incoming.length };
   }
   async function setAutoUpdate(record, value, deps) {
     const updated = { ...record, autoUpdate: value };
@@ -1592,8 +1652,25 @@
     return updated;
   }
   var hasUpdate = (r) => !!r.latest && (r.latest.state === "update" || r.latest.state === "changed");
+  var editedSinceInstall = (record, extension) => extension.contentHash !== record.installedHash && extension.contentHash !== record.latest?.hash;
+  async function refuseEdited(record, extension, deps) {
+    const error = new InstallError("edited", `Marinara holds ${extension.contentHash}; Fetchy last installed ${record.installedHash}`);
+    await log(deps, {
+      action: "update",
+      result: "refused",
+      extensionId: record.extensionId,
+      name: record.name,
+      source: record.input,
+      ref: record.ref,
+      from: sideOf(extension),
+      to: null,
+      detail: `automatic update skipped: ${error.message}`
+    });
+    return error;
+  }
   async function autoUpdate(deps, options) {
     const out = [];
+    let engine = null;
     for (const first of await deps.store.load()) {
       if (!first.autoUpdate || first.extensionId === deps.selfId) continue;
       let record = first;
@@ -1603,6 +1680,9 @@
       }
       if (!hasUpdate(record)) continue;
       try {
+        engine ??= new Map((await deps.client.list()).map((x) => [x.id, x]));
+        const current = engine.get(record.extensionId);
+        if (current && editedSinceInstall(record, current)) throw await refuseEdited(record, current, deps);
         out.push({ record, result: await updateSource(record, deps) });
       } catch (e) {
         out.push({ record, result: e instanceof Error ? e : new Error(String(e)) });
@@ -1820,7 +1900,10 @@
     "result.rolledBack": 'Restored "{name}" to {hash}. Marinara keeps it disabled until you approve that hash again in Settings → Addons → External Extensions.',
     "result.checking": "Checking {done}/{total}…",
     "result.exported": 'Copy the text below and keep it; "Import list" restores it.',
-    "result.imported": "Imported {imported} source(s); {ignored} entr(ies) were not valid.",
+    "result.imported": "Imported {imported} new source(s), with automatic updates and auto re-approval off.",
+    "result.importKept": "{kept} already in the list were left as they are.",
+    "result.importDifferent": "{different} of them name another address in the file; that address was not used (to follow it, choose Remove → “Remove from this list only”, then install from it).",
+    "result.importIgnored": "{ignored} entr(ies) were not valid.",
     "result.copied": "Copied.",
     "revisions.heading": "Revisions kept by Marinara",
     "revisions.none": "Marinara keeps no earlier revision of this extension.",
@@ -1838,6 +1921,7 @@
     "error.install.runtime-changed": "The package changes the runtime ({message}). An extension is never switched between browser and server; install it as a new extension instead.",
     "error.install.unexpected-result": "Marinara's answer does not match what was sent ({message}). Check the extension in Settings → Addons → External Extensions before approving anything.",
     "error.install.not-linkable": "Linking needs Marinara's extension list, which could not be read.",
+    "error.install.edited": "left as it is — its code was changed in Marinara since Fetchy installed it, so it isn't updated automatically. Update it on its own to replace that code (Marinara keeps the current code as a revision when revisions are kept).",
     "error.import.invalid": "That is not an exported source list.",
     "anchor.button": "Install from GitHub",
     "anchor.hint": "Shortcut: Alt+Shift+F",
@@ -1872,7 +1956,7 @@
     "prefs.heading": "Options",
     "help.install": "A GitHub repository (FigCake/ME.Fetchy, or a /tree/branch/folder link), a manifest.json address, or a zip address. Fetchy downloads the files, shows what they are, and stores them in Marinara switched off. You switch them on under Settings → Addons → External Extensions (Review and Run).",
     "help.items": "Every External Extension in Marinara. Ones installed through Fetchy can be checked for updates; others can be linked to the GitHub address they came from. An update always switches the extension off until you approve the new code.",
-    "help.autoCheck": "Checks every extension for updates when this panel opens. It installs only those you switched automatic updates on for.",
+    "help.autoCheck": "Checks every extension for updates when this panel opens, except those checked in the last 30 minutes (“Check all” checks them all now). It installs only those you switched automatic updates on for.",
     "autoUpdate.label": "Update automatically",
     "autoUpdate.badge": "auto update",
     "help.autoUpdate": "Fetchy installs this extension's updates by itself: when Marinara opens (at most every 6 hours) and after a check. Marinara keeps the new code switched off until you approve it, unless auto re-approval or “Keep updated extensions on” is set.",
@@ -2076,7 +2160,10 @@
     "result.rolledBack": '"{name}"을(를) {hash} 로 되돌렸습니다. 설정 → 애드온 → 외부 확장에서 그 해시를 다시 승인할 때까지 Marinara는 비활성 상태로 둡니다.',
     "result.checking": "확인 중 {done}/{total}…",
     "result.exported": "아래 텍스트를 복사해 보관하세요. “목록 가져오기”로 복원할 수 있습니다.",
-    "result.imported": "{imported}개 소스를 가져왔습니다. 올바르지 않은 항목 {ignored}개는 무시했습니다.",
+    "result.imported": "새 소스 {imported}개를 가져왔습니다. 자동 업데이트와 자동 승인은 꺼져 있습니다.",
+    "result.importKept": "이미 목록에 있는 {kept}개는 그대로 두었습니다.",
+    "result.importDifferent": "그중 {different}개는 파일에 다른 주소가 적혀 있지만 그 주소는 쓰지 않았습니다(그 주소를 따르려면 제거 → “목록에서만 제거”를 한 뒤 그 주소에서 설치하세요).",
+    "result.importIgnored": "올바르지 않은 항목 {ignored}개는 무시했습니다.",
     "result.copied": "복사했습니다.",
     "revisions.heading": "Marinara가 보관한 리비전",
     "revisions.none": "Marinara에 이 확장의 이전 리비전이 없습니다.",
@@ -2094,6 +2181,7 @@
     "error.install.runtime-changed": "패키지가 런타임을 바꿉니다 ({message}). 확장을 브라우저↔서버로 전환하지 않습니다. 새 확장으로 설치하세요.",
     "error.install.unexpected-result": "Marinara의 응답이 보낸 내용과 다릅니다 ({message}). 승인 전에 설정 → 애드온 → 외부 확장에서 확장을 확인하세요.",
     "error.install.not-linkable": "연결에는 Marinara의 확장 목록이 필요한데 읽을 수 없습니다.",
+    "error.install.edited": "그대로 둠 — Fetchy가 설치한 뒤 Marinara에서 코드가 바뀌어서 자동으로 업데이트하지 않습니다. 그 코드를 바꾸려면 따로 업데이트하세요(리비전을 보관하도록 설정돼 있으면 Marinara가 현재 코드를 리비전으로 남깁니다).",
     "error.import.invalid": "내보낸 소스 목록이 아닙니다.",
     "anchor.button": "GitHub에서 설치",
     "anchor.hint": "단축키: Alt+Shift+F",
@@ -2128,7 +2216,7 @@
     "prefs.heading": "옵션",
     "help.install": "GitHub 저장소(FigCake/ME.Fetchy 처럼, 또는 /tree/브랜치/폴더 링크), manifest.json 주소, zip 주소. Fetchy가 파일을 받아 내용을 보여 주고 Marinara에 꺼진 상태로 넣습니다. 켜는 것은 설정 → 애드온 → 외부 확장(Review and Run)에서 합니다.",
     "help.items": "Marinara의 외부 확장 전부입니다. Fetchy로 설치한 것은 업데이트를 확인할 수 있고, 아닌 것은 받아온 GitHub 주소를 연결하면 됩니다. 업데이트하면 새 코드를 승인할 때까지 확장이 꺼집니다.",
-    "help.autoCheck": "이 패널을 열 때 모든 확장의 업데이트를 확인합니다. 설치는 자동 업데이트를 켠 확장만 합니다.",
+    "help.autoCheck": "이 패널을 열 때 모든 확장의 업데이트를 확인합니다. 30분 안에 확인한 것은 건너뜁니다(“모두 확인”은 지금 전부 확인). 설치는 자동 업데이트를 켠 확장만 합니다.",
     "autoUpdate.label": "자동 업데이트",
     "autoUpdate.badge": "자동 업데이트",
     "help.autoUpdate": "Fetchy가 이 확장의 업데이트를 알아서 설치합니다: 마리나라를 열 때(최대 6시간에 한 번)와 업데이트 확인 뒤. 새 코드는 마리나라가 승인할 때까지 꺼 둡니다(자동 승인이나 “업데이트한 확장 켜 두기”가 켜져 있으면 다시 켜짐).",
@@ -2289,6 +2377,7 @@
 
   // src/ui.ts
   var HOST_ELEMENT_ID = "me-fetchy";
+  var OPEN_CHECK_EVERY_MS = 30 * 6e4;
   var STYLE = `
 /* Marinara's own theme variables reach the shadow tree (custom properties cross
    the boundary), so colours, borders and the accent follow whatever theme the
@@ -2638,10 +2727,11 @@ footer { margin-top: 20px; }
       }
       await afterChange();
     });
-    const onCheckAll = () => guard(async () => {
+    const checkRecords = (due) => guard(async () => {
       sourcesMessage = null;
       try {
         records = await checkAll(deps, {
+          due,
           onProgress: (done, total) => {
             sourcesMessage = { kind: "ok", text: t("result.checking", { done, total }) };
             render();
@@ -2653,6 +2743,7 @@ footer { margin-top: 20px; }
         sourcesMessage = { kind: "err", text: describeError(e, t) };
       }
     });
+    const onCheckAll = () => checkRecords();
     const onCheckOne = (record) => guard(async () => {
       sourcesMessage = null;
       const checked = await checkSource(record, deps);
@@ -2748,11 +2839,20 @@ footer { margin-top: 20px; }
         sourcesMessage = { kind: "err", text: describeError(e, t, { name: record.name }) };
       }
     });
+    const importSummary = (result) => {
+      const r = { ...result };
+      return [
+        t("result.imported", r),
+        r.kept ? t("result.importKept", r) : "",
+        r.different ? t("result.importDifferent", r) : "",
+        r.ignored ? t("result.importIgnored", r) : ""
+      ].filter(Boolean).join(" ");
+    };
     const onImport = (text) => guard(async () => {
       sourcesMessage = null;
       try {
         const result = await importSources(text, store);
-        sourcesMessage = { kind: "ok", text: t("result.imported", result) };
+        sourcesMessage = { kind: result.different || result.ignored ? "warn" : "ok", text: importSummary(result) };
         transfer = null;
         await afterChange();
       } catch (e) {
@@ -3568,7 +3668,8 @@ footer { margin-top: 20px; }
       panel.focus();
       void Promise.all([loadPolicy(), loadRows(), loadLog(), reconcileRecords()]).then(() => {
         render();
-        if (autoCheck && records.length && !busy) void onCheckAll().then(() => runAutoUpdates(false));
+        const due = (r) => checkedLongAgo(r, /* @__PURE__ */ new Date(), OPEN_CHECK_EVERY_MS);
+        if (autoCheck && records.some(due) && !busy) void checkRecords(due).then(() => runAutoUpdates(false));
         else void checkCatalogQuietly().then(() => render());
       });
     }
@@ -3618,7 +3719,7 @@ footer { margin-top: 20px; }
   }
 
   // src/index.ts
-  var VERSION = true ? "0.8.1" : "0.0.0";
+  var VERSION = true ? "0.8.2" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
