@@ -1,4 +1,4 @@
-/*! Fetchy 0.8.3 — extension installer for Marinara Engine 2.5.x (External Extension).
+/*! Fetchy 0.9.0 — extension installer for Marinara Engine 2.5.x (External Extension).
  * Installs other External Extensions from a GitHub URL through Marinara's API.
  * Never executes downloaded code. Source: https://github.com/FigCake/ME.Fetchy
  * License: MIT */
@@ -68,19 +68,19 @@
     return { capabilities, unknown };
   }
   var utf8 = new TextEncoder();
-  var utf8Length = (text) => utf8.encode(text).byteLength;
+  var utf8Length = (text2) => utf8.encode(text2).byteLength;
   async function readPaths(value, role, read, files) {
     if (value == null) return null;
     const paths = (Array.isArray(value) ? value : [value]).filter((p) => typeof p === "string" && p.trim() !== "");
     const parts = [];
     if (files.length + paths.length > LIMITS.filesPerManifest) throw new ManifestError({ code: "too-many-files", count: files.length + paths.length });
     for (const path of paths) {
-      const text = await read(path);
-      if (text == null) throw new ManifestError({ code: "file-missing", path });
-      const bytes = utf8Length(text);
+      const text2 = await read(path);
+      if (text2 == null) throw new ManifestError({ code: "file-missing", path });
+      const bytes = utf8Length(text2);
       if (bytes > LIMITS.textFileBytes) throw new ManifestError({ code: "file-too-large", path, bytes });
       files.push({ path, role, bytes });
-      parts.push(text);
+      parts.push(text2);
     }
     return parts.length ? parts.join("\n\n") : null;
   }
@@ -151,6 +151,14 @@
   function apiPayload(draft) {
     return draft.runtime === "server" ? { name: draft.name, version: draft.version, description: draft.description, runtime: "server", capabilities: [], serverJs: draft.serverJs } : { name: draft.name, version: draft.version, description: draft.description, runtime: "client", capabilities: draft.capabilities, css: draft.css, js: draft.js };
   }
+  function manifestVersion(parsed) {
+    try {
+      const config = configOf(singleEntry(parsed));
+      return config ? normalizeVersion(config.version).version : null;
+    } catch {
+      return null;
+    }
+  }
 
   // src/engine-api.ts
   var EngineApiError = class extends Error {
@@ -165,17 +173,21 @@
     status;
     existingId;
   };
+  var STORAGE_LIMIT_BYTES = 1e6;
   var ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+  function canReenable(x) {
+    return !x.enabled && x.approvedHash !== null && x.approvedHash === x.contentHash;
+  }
   async function errorFrom(response) {
     let payload = null;
-    let text = "";
+    let text2 = "";
     try {
-      text = await response.text();
-      payload = JSON.parse(text);
+      text2 = await response.text();
+      payload = JSON.parse(text2);
     } catch {
     }
     const record = payload && typeof payload === "object" ? payload : {};
-    const message2 = [record.error, record.message].filter((v) => typeof v === "string").join(" ") || text || `HTTP ${response.status}`;
+    const message2 = [record.error, record.message].filter((v) => typeof v === "string").join(" ") || text2 || `HTTP ${response.status}`;
     const existingId = typeof record.id === "string" ? record.id : null;
     const status = response.status;
     const lower = message2.toLowerCase();
@@ -191,14 +203,19 @@
     }
     return new EngineApiError(code, status, message2, existingId);
   }
+  function storageValue(answer) {
+    const value = answer && typeof answer === "object" ? answer.value : void 0;
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    throw new EngineApiError("http", 200, "Marinara answered the storage request in an unexpected shape");
+  }
   function createEngineClient(options) {
     const base = (options.baseUrl ?? "").replace(/\/$/, "") + "/api/personal-extensions";
-    async function request(method, path, body) {
+    async function request(method, path, body2) {
       const headers = new Headers();
       headers.set("Accept", "application/json");
       if (method !== "GET") {
         headers.set("x-marinara-csrf", "1");
-        if (body !== void 0) headers.set("Content-Type", "application/json");
+        if (body2 !== void 0) headers.set("Content-Type", "application/json");
       }
       const secret = options.adminSecret();
       if (secret) headers.set("X-Admin-Secret", secret);
@@ -207,7 +224,7 @@
         response = await options.fetch(base + path, {
           method,
           headers,
-          body: body === void 0 ? void 0 : JSON.stringify(body),
+          body: body2 === void 0 ? void 0 : JSON.stringify(body2),
           cache: "no-store",
           credentials: "same-origin"
         });
@@ -221,25 +238,36 @@
       if (!ID_PATTERN.test(id)) throw new EngineApiError("not-found", 404, `Not a Marinara extension id: ${id}`);
       return `/${encodeURIComponent(id)}`;
     };
+    async function approve(id, contentHash, fullPageAccess) {
+      if (!/^sha256:[a-f0-9]{64}$/.test(contentHash)) throw new EngineApiError("validation", 400, `Not a content hash: ${contentHash}`);
+      const body2 = { contentHash, acknowledgeSandboxedCode: true };
+      if (fullPageAccess) body2.acknowledgeFullPageAccess = true;
+      return (await request("POST", `${idPath(id)}/approve`, body2)).json();
+    }
+    async function list() {
+      const value = await (await request("GET", "")).json();
+      return Array.isArray(value) ? value : [];
+    }
     return {
       async policy() {
         return (await request("GET", "/policy")).json();
       },
-      async list() {
-        const value = await (await request("GET", "")).json();
-        return Array.isArray(value) ? value : [];
-      },
+      list,
       async create(draft) {
         return (await request("POST", "", apiPayload(draft))).json();
       },
       async update(id, draft) {
         return (await request("PATCH", idPath(id), apiPayload(draft))).json();
       },
-      async approve(id, contentHash, fullPageAccess) {
-        if (!/^sha256:[a-f0-9]{64}$/.test(contentHash)) throw new EngineApiError("validation", 400, `Not a content hash: ${contentHash}`);
-        const body = { contentHash, acknowledgeSandboxedCode: true };
-        if (fullPageAccess) body.acknowledgeFullPageAccess = true;
-        return (await request("POST", `${idPath(id)}/approve`, body)).json();
+      approve,
+      async enable(id, contentHash, fullPageAccess) {
+        const current = (await list()).find((x) => x.id === id);
+        if (!current) throw new EngineApiError("not-found", 404, `Marinara has no extension ${id}`);
+        if (current.enabled && current.approvedHash === current.contentHash && current.contentHash === contentHash) return current;
+        if (current.contentHash !== contentHash || !canReenable(current)) {
+          throw new EngineApiError("needs-approval", 0, `${current.contentHash} is not the approved code; approve it in Marinara`);
+        }
+        return approve(id, contentHash, fullPageAccess);
       },
       async disable(id) {
         return (await request("PATCH", idPath(id), { enabled: false })).json();
@@ -250,6 +278,15 @@
       },
       async remove(id) {
         await request("DELETE", idPath(id));
+      },
+      async readStorage(id) {
+        return storageValue(await (await request("GET", `${idPath(id)}/storage`)).json());
+      },
+      async patchStorage(id, value) {
+        return storageValue(await (await request("PATCH", `${idPath(id)}/storage`, value)).json());
+      },
+      async clearStorage(id) {
+        await request("DELETE", `${idPath(id)}/storage`);
       }
     };
   }
@@ -272,7 +309,7 @@
     const id = typeof m.extension?.id === "string" ? m.extension.id : typeof m.extensionId === "string" ? m.extensionId : null;
     const name = typeof m.extension?.name === "string" ? m.extension.name : typeof m.extensionName === "string" ? m.extensionName : fallbackName;
     const prefix = `[${name}]`;
-    const log2 = {
+    const log3 = {
       debug: (...a) => (m.log?.debug ?? console.debug)(...m.log?.debug ? a : [prefix, ...a]),
       info: (...a) => (m.log?.info ?? console.info)(...m.log?.info ? a : [prefix, ...a]),
       warn: (...a) => (m.log?.warn ?? console.warn)(...m.log?.warn ? a : [prefix, ...a]),
@@ -283,7 +320,7 @@
     return {
       extensionId: id,
       extensionName: name,
-      log: log2,
+      log: log3,
       fetch: pageFetch,
       storage: {
         async get() {
@@ -309,6 +346,7 @@
   var SCHEMA_VERSION = 1;
   var isRecord2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
   var str = (v) => typeof v === "string" ? v : null;
+  var COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
   function parseSource(value) {
     if (!isRecord2(value)) return null;
     if (value.kind === "github-repo" && typeof value.owner === "string" && typeof value.repo === "string") {
@@ -320,6 +358,10 @@
     return null;
   }
   var UPDATE_STATES = ["up-to-date", "update", "older", "changed", "unknown"];
+  function parseRepo(value) {
+    if (!isRecord2(value) || typeof value.archived !== "boolean" || typeof value.checkedAt !== "string") return null;
+    return { archived: value.archived, pushedAt: str(value.pushedAt), checkedAt: value.checkedAt };
+  }
   function parseLatest(value) {
     if (!isRecord2(value) || typeof value.hash !== "string" || typeof value.checkedAt !== "string") return null;
     const state = UPDATE_STATES.includes(value.state) ? value.state : "unknown";
@@ -330,12 +372,15 @@
     const source = parseSource(value.source);
     const id = str(value.id), extensionId = str(value.extensionId), name = str(value.name), installedHash = str(value.installedHash);
     if (!source || !id || !extensionId || !name || !installedHash) return null;
+    const commit = str(value.installedCommit);
+    const repo = parseRepo(value.repo);
     return {
       id,
       source,
       name,
       extensionId,
       installedHash,
+      ...commit && COMMIT_SHA.test(commit) ? { installedCommit: commit } : {},
       input: str(value.input) ?? "",
       ref: str(value.ref),
       installedVersion: str(value.installedVersion),
@@ -344,14 +389,15 @@
       latest: parseLatest(value.latest),
       lastError: str(value.lastError),
       autoApprove: value.autoApprove === true,
-      autoUpdate: value.autoUpdate === true
+      autoUpdate: value.autoUpdate === true,
+      ...repo ? { repo } : {}
     };
   }
   var sameParsedSource = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   function mergeImported(existing, incoming) {
     const records = [...existing];
     const byExtension = new Map(records.map((r) => [r.extensionId, r]));
-    const ids = new Set(records.map((r) => r.id));
+    const ids2 = new Set(records.map((r) => r.id));
     let added = 0, kept = 0, different = 0;
     for (const record of incoming) {
       const current = byExtension.get(record.extensionId);
@@ -363,7 +409,7 @@
       const fresh = {
         ...record,
         // the file's id may belong to another extension here
-        id: ids.has(record.id) ? newRecordId() : record.id,
+        id: ids2.has(record.id) ? newRecordId() : record.id,
         lastCheckedAt: null,
         latest: null,
         lastError: null,
@@ -372,7 +418,7 @@
       };
       records.push(fresh);
       byExtension.set(fresh.extensionId, fresh);
-      ids.add(fresh.id);
+      ids2.add(fresh.id);
       added++;
     }
     return { records, added, kept, different };
@@ -381,6 +427,40 @@
     const bytes = new Uint8Array(8);
     crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  var sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  function mergeRecord(current, before, after, fromInstall = false) {
+    if (fromInstall && current.installedHash !== before.installedHash && after.installedHash === before.installedHash) return current;
+    const out = { ...current };
+    const was = before;
+    const now = after;
+    for (const key of /* @__PURE__ */ new Set([...Object.keys(was), ...Object.keys(now)])) {
+      if (sameValue(was[key], now[key])) continue;
+      if (now[key] === void 0) delete out[key];
+      else out[key] = now[key];
+    }
+    return out;
+  }
+  function applyChanges(stored, changes) {
+    let list = [...stored];
+    for (const { before, after, fromInstall } of changes) {
+      if (before && after) list = list.map((r) => r.id === before.id ? mergeRecord(r, before, after, fromInstall) : r);
+      else if (before) list = list.filter((r) => r.id !== before.id);
+      else if (after && !list.some((r) => r.id === after.id || r.extensionId === after.extensionId)) list.push(after);
+    }
+    return list;
+  }
+  function changesBetween(before, after, fromInstall = false) {
+    const was = new Map(before.map((r) => [r.id, r]));
+    const now = new Map(after.map((r) => [r.id, r]));
+    const changes = [];
+    for (const r of before) {
+      const next = now.get(r.id);
+      if (!next) changes.push({ before: r, after: null });
+      else if (!sameValue(r, next)) changes.push({ before: r, after: next, ...fromInstall ? { fromInstall } : {} });
+    }
+    for (const r of after) if (!was.has(r.id)) changes.push({ before: null, after: r });
+    return changes;
   }
   var SourcesStore = class {
     constructor(storage) {
@@ -392,26 +472,41 @@
       const list = Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : [];
       return list.map(parseRecord).filter((r) => r !== null);
     }
-    async save(records) {
+    /** Replaces the stored list as given, whatever it holds now. Tests seed with it; Fetchy writes through commit or mutate. */
+    async overwrite(records) {
       await this.storage.patch({ [SCHEMA_KEY]: SCHEMA_VERSION, [STORAGE_KEY]: records });
+    }
+    /** Writes in this tab, one after another: two read-then-write steps never overlap. */
+    queue = Promise.resolve();
+    /** Reads the list, lets `fn` change it, writes the result and returns it (after any write already under way here). */
+    mutate(fn) {
+      const run = this.queue.then(async () => {
+        const next = fn(await this.load());
+        await this.overwrite(next);
+        return next;
+      });
+      this.queue = run.catch(() => {
+      });
+      return run;
+    }
+    /** Writes this tab's changes over the list as it is now (applyChanges). */
+    async commit(changes) {
+      if (changes.length === 0) return this.load();
+      return this.mutate((list) => applyChanges(list, changes));
     }
     /** Inserts or replaces by installer id; a record for the same Marinara extension id is replaced too. */
     async upsert(record) {
-      const records = (await this.load()).filter((r) => r.id !== record.id && r.extensionId !== record.extensionId);
-      records.push(record);
-      await this.save(records);
-      return records;
+      return this.mutate((list) => [...list.filter((r) => r.id !== record.id && r.extensionId !== record.extensionId), record]);
     }
     async remove(id) {
-      const records = (await this.load()).filter((r) => r.id !== id);
-      await this.save(records);
-      return records;
+      return this.mutate((list) => list.filter((r) => r.id !== id));
     }
   };
 
   // src/anchor.ts
   var SECTION_ID = "settings-section-external-extensions";
   var ANCHOR_BUTTON_ID = "me-fetchy-settings-button";
+  var DOT_STYLE = "display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--primary, #6b63d8);margin-left:6px;vertical-align:middle;flex:0 0 auto";
   var BUTTON_STYLE = [
     "display:flex",
     "min-height:2.75rem",
@@ -439,6 +534,9 @@
     button.setAttribute("aria-haspopup", "dialog");
     button.textContent = label;
     button.addEventListener("click", onOpen);
+    const dot = doc.createElement("span");
+    dot.setAttribute("style", DOT_STYLE);
+    dot.setAttribute("role", "img");
     let scheduled = false;
     const place = () => {
       scheduled = false;
@@ -468,6 +566,16 @@
     return {
       get attached() {
         return button.isConnected;
+      },
+      setDot(on, dotLabel) {
+        if (on) {
+          dot.setAttribute("aria-label", dotLabel ?? "");
+          button.title = dotLabel ?? "";
+          if (dot.parentElement !== button) button.appendChild(dot);
+        } else {
+          dot.remove();
+          button.removeAttribute("title");
+        }
       },
       destroy() {
         observer.disconnect();
@@ -500,8 +608,8 @@
       detail: str2(v.detail)
     };
   }
-  function scrub(text) {
-    return text.replace(/x-admin-secret\s*[:=]\s*\S+/gi, "x-admin-secret: [redacted]").replace(/(authorization|token|secret|password)\s*[:=]\s*\S+/gi, "$1: [redacted]").slice(0, 300);
+  function scrub(text2) {
+    return text2.replace(/x-admin-secret\s*[:=]\s*\S+/gi, "x-admin-secret: [redacted]").replace(/(authorization|token|secret|password)\s*[:=]\s*\S+/gi, "$1: [redacted]").slice(0, 300);
   }
   var AuditLog = class {
     constructor(storage, now = () => /* @__PURE__ */ new Date()) {
@@ -527,10 +635,10 @@
     }
     /** Tab-separated text for export; one entry per line, newest first. */
     static format(entries2) {
-      const side2 = (s) => s ? `v${s.version ?? "?"} ${s.hash ?? "-"} [${s.capabilities.join(",")}]` : "-";
+      const side3 = (s) => s ? `v${s.version ?? "?"} ${s.hash ?? "-"} [${s.capabilities.join(",")}]` : "-";
       return [
         "at	action	result	extension	name	source	from	to	detail",
-        ...entries2.map((e) => [e.at, e.action, e.result, e.extensionId ?? "-", e.name, e.source ? `${e.source}${e.ref ? `@${e.ref}` : ""}` : "-", side2(e.from), side2(e.to), e.detail ?? ""].join("	"))
+        ...entries2.map((e) => [e.at, e.action, e.result, e.extensionId ?? "-", e.name, e.source ? `${e.source}${e.ref ? `@${e.ref}` : ""}` : "-", side3(e.from), side3(e.to), e.detail ?? ""].join("	"))
       ].join("\n");
     }
   };
@@ -617,8 +725,6 @@
     "action.updateTracked": "Update {name}",
     "action.cancel": "Cancel",
     "action.busy": "Working…",
-    "action.open": "Open source",
-    "action.check": "Check for updates",
     "action.checkAll": "Check all",
     "result.selfUpdatedOn": "Updated Fetchy and switched it back on.",
     "action.updateAll": "Update all",
@@ -629,9 +735,6 @@
     "result.updatedAll": "Updated {ok} of {total}.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": 'Nothing to update. Press "Check all" first.',
-    "action.forget": "Remove",
-    "action.forget.listOnly": "Remove from this list only",
-    "action.forget.engine": "Also delete from Marinara",
     "action.confirmForget": 'Remove "{name}"?',
     "result.created": "Installed “{name}”. It is off until you approve it: Settings → Addons → External Extensions → Review and Run.",
     "result.updated": "Updated “{name}”. It is off until you approve it again: Settings → Addons → External Extensions → Review and Run.",
@@ -767,6 +870,205 @@
     "action.disable": "Switch off",
     "action.delete": "Delete",
     "action.confirmDelete": "Delete “{name}” from Marinara?",
+    "notify.title": "{count} update(s) for your extensions",
+    "notify.open": "Open",
+    "notify.later": "Later",
+    "anchor.hasUpdate": "An update is waiting",
+    "self.newVersion": "A new Fetchy is out: {version}.",
+    "self.addSource": "Add as a source to update",
+    "option.notify": "Update notice",
+    "help.notify": "A little after Marinara opens, at most every 6 hours, Fetchy reads each source’s manifest.json (a small file; no code, no GitHub API) and shows a notice when a newer version is out. Each version is noticed once.",
+    "changes.heading": "What changed",
+    "changes.loading": "Reading the commits…",
+    "changes.noBase": "Fetchy doesn’t know which commit this was installed from (installed before 0.9, rolled back, or updated while the panel was closed). See the history on GitHub.",
+    "changes.more": "More than {count}: the rest on GitHub.",
+    "changes.none": "No commit in this folder since the installed one.",
+    "changes.history": "History on GitHub",
+    "repo.archived": "archived",
+    "repo.archived.title": "Its repository is archived on GitHub: the author no longer works on it. Last push: {date}",
+    "repo.stale": "not updated for 6 months",
+    "repo.stale.title": "No push to its repository for over 6 months. Last push: {date}",
+    "action.diagnostics": "Copy diagnostics",
+    "help.diagnostics": "Copies a text for a bug report: Marinara’s and Fetchy’s versions, the gates, the browser, and each extension’s version, state, source and last check, with the latest change log. Never code, stored data or the admin secret (only whether one is set).",
+    "result.diagnosticsCopied": "Diagnostics copied. Paste them into your report.",
+    "wizard.title": "First-time setup",
+    "wizard.stepOf": "{step}/{total} · {name}",
+    "wizard.skip": "Skip",
+    "wizard.back": "Back",
+    "wizard.next": "Next",
+    "wizard.finish": "Finish",
+    "wizard.again": "Show first-time setup again",
+    "wizard.status.heading": "What Marinara allows",
+    "wizard.status.intro": "Fetchy can install only what Marinara lets in. A ✗ says what to change.",
+    "wizard.status.env": "ENABLE_EXTERNAL_EXTENSIONS=true in the server .env",
+    "wizard.status.switch": "“Allow third-party extension imports” is on",
+    "wizard.status.admin": "Fetchy may manage extensions (Admin Access)",
+    "wizard.status.adminFix": "On a remote Marinara: set ADMIN_SECRET in the server .env, then enter it under Settings → Admin Access, and open this again.",
+    "wizard.status.sandbox": "Server extension sandbox",
+    "wizard.status.sandboxNote": "Only server-side extensions need it; FigCake’s extensions run in the browser.",
+    "wizard.pick.heading": "Pick",
+    "wizard.pick.intro": "Tick the FigCake extensions you want. Each goes in switched off; you approve it in Marinara afterwards.",
+    "wizard.options.heading": "Options",
+    "wizard.install.heading": "Install",
+    "wizard.install.none": "Nothing is ticked. Go back to pick, or go on.",
+    "wizard.approve.heading": "Approve in Marinara",
+    "wizard.approve.how": "Open Settings → Addons → External Extensions, open each one below → Review and Run, read the code and approve it. The hash there must be the one shown here. Then press “Check again”.",
+    "wizard.approve.none": "None of FigCake’s extensions is in Marinara yet.",
+    "wizard.approve.recheck": "Check again",
+    "storage.title": "Stored data",
+    "storage.open": "Stored data",
+    "help.storage": "What each extension keeps in Marinara (at most 1,000,000 bytes each), measured one after another. Back it up to a file, restore it from one, or clear it. Only an extension that is on can be measured.",
+    "storage.measure": "Measure again",
+    "storage.measuring": "Measuring…",
+    "storage.off": "Can be measured only while it is on.",
+    "storage.failed": "Could not be read: {error}",
+    "storage.of": "{size} of 1 MB",
+    "storage.topKeys": "Biggest keys ({count})",
+    "storage.backup": "Back up",
+    "storage.restore": "Restore…",
+    "storage.clear": "Clear…",
+    "storage.backedUp": "Saved “{name}”’s data to a file.",
+    "storage.file.not-json": "That file is not JSON.",
+    "storage.file.not-a-backup": "That file is not a Fetchy backup.",
+    "storage.file.not-in-backup": "That backup holds no data for “{name}”.",
+    "storage.file.too-large": "That data is over Marinara’s 1,000,000-byte limit.",
+    "storage.restore.title": "Restore {size} into “{name}”?",
+    "storage.restore.otherName": "The file was saved from “{from}”, not “{name}”.",
+    "storage.restore.otherVersion": "The file was saved from version {from}; this is {version}.",
+    "storage.restore.body": "First, its current data is saved to a file. Then it is removed and the file’s data written. Reload the page afterwards.",
+    "storage.restore.go": "Save current data and restore",
+    "storage.restore.noBackup": "Nothing was changed: the current data could not be saved first ({error}).",
+    "storage.restore.failed": "Restoring “{name}” failed: {error}. Its data from before is in the file just saved; restore that file.",
+    "storage.restored": "Restored “{name}”’s data.",
+    "storage.clear.first": "Clearing removes all of “{name}”’s data. First, it is saved to a file.",
+    "storage.clear.backup": "Save to a file and go on",
+    "storage.clear.type": "Type “{name}” to clear its data.",
+    "storage.clear.go": "Clear",
+    "storage.cleared": "Cleared “{name}”’s data. It is in the file just saved.",
+    "storage.reloadHint": "An extension reads its data when it starts.",
+    "storage.reload": "Reload the page",
+    "storage.browser": "In this browser",
+    "help.storage.browser": "What this site keeps in the browser itself, grouped by name. Only sizes and names; nothing is changed here.",
+    "storage.browser.usage": "In use: {usage} of {quota}",
+    "storage.browser.keys": "{count} key(s)",
+    "storage.browser.noList": "This browser doesn’t list its databases.",
+    "profiles.title": "Switched-on sets",
+    "help.profiles": "Save which extensions are on under a name, and switch to that set later: the others go off, and the set’s go back on, only those whose code is the code you approved. Fetchy itself stays on.",
+    "profiles.name": "Name of the set",
+    "profiles.save": "Save what is on now",
+    "profiles.count": "{count} of {max} sets",
+    "profiles.size": "{count} on",
+    "profiles.apply": "Apply",
+    "profiles.none": "No set yet.",
+    "profiles.full": "You already have {count} sets: delete one first.",
+    "profiles.saved": "Saved “{name}” ({count} on).",
+    "switch.willOff": "Will switch off: {names}",
+    "switch.willOn": "Will switch back on (the code you approved): {names}",
+    "switch.needsApproval": "Left off, they need a new approval in Marinara: {names}",
+    "switch.missing": "{count} no longer in Marinara.",
+    "switch.nothing": "Nothing to switch.",
+    "switch.off": "Switched off: {names}",
+    "switch.on": "Switched back on: {names}",
+    "switch.failed": "{name}: {error}",
+    "switch.reloadHint": "Reload the page to be sure.",
+    "bisect.title": "Find a problem extension",
+    "help.bisect": "Switches half of the extensions off, then asks whether the problem is still there after a reload, and halves again, until one is left. Fetchy stays on. Automatic updates wait meanwhile. Back as it was any time.",
+    "bisect.intro": "Half of what is on now goes off. Reload the page, try what goes wrong, and answer whether it is still there. A few rounds find the one.",
+    "bisect.limits": "It finds one extension that causes the problem alone; a problem only two extensions cause together may not be found. Only extensions switched on now take part.",
+    "bisect.onNow": "On now ({count}):",
+    "bisect.ack": "Some have full page access. I know they are switched back on along the way, with the code I approved.",
+    "bisect.start": "Start",
+    "bisect.none": "No extension besides Fetchy is on.",
+    "bisect.reloadThenAnswer": "Reload the page, then answer here.",
+    "bisect.question": "Is the problem still there? ({left} left)",
+    "bisect.testing": "On now: {names}",
+    "bisect.allOff": "all of them off",
+    "bisect.yes": "Yes, still there",
+    "bisect.no": "No, it’s gone",
+    "bisect.stop": "Stop and put back",
+    "bisect.found": "Found it: “{name}” ({steps} rounds).",
+    "bisect.notFound": "The problem stayed with all of them off: it doesn’t seem to come from an extension.",
+    "bisect.restore": "Put everything back",
+    "bisect.restoreWithout": "Put back, leaving “{name}” off",
+    "bisect.toast": "Looking for a problem extension: is the problem still there?",
+    "bisect.toast.done": "The problem extension search is over.",
+    "backup.title": "Full backup",
+    "help.backup": "One file with the source list, your folders and tags, and the stored data of the extensions you tick, to move to another browser or Marinara. Restoring brings back the source list like “Import list”.",
+    "backup.intro": "Whose stored data goes in (only extensions that are on can be read):",
+    "backup.noData": "No extension that is on has data to back up.",
+    "backup.save": "Save the backup file",
+    "backup.restore": "Restore from a file…",
+    "backup.restoreNote": "Restoring adds the sources not in the list yet (automatic switches off), and the folders and tags when you have none. Stored data goes back later: install and switch on the extension, then Stored data → Restore and pick the same file.",
+    "backup.saved": "Saved the backup file (stored data of {count}).",
+    "backup.unread": "Could not read: {names}",
+    "backup.notOne": "That file is not a Fetchy full backup.",
+    "backup.dataLater": "The file also holds the data of: {names}. Once each is installed and on, restore it from Stored data → Restore with this file.",
+    "conflicts.heading": "Overlaps",
+    "conflicts.preview": "Check for possible conflicts",
+    "conflicts.installed": "Check for conflicts",
+    "conflicts.title": "Conflicts between extensions",
+    "help.conflicts": "Fetchy reads the code (never runs it) for names an extension takes on the page: globals, custom elements, element ids, storage keys, commands, shortcuts, !important styles. Two taking the same name conflict; one taking and one only reading is a note. Only extensions with full page access share the page; a match is a hint, so each comes with its line.",
+    "conflicts.sandboxed": "Without full page access it runs in its own sandboxed frame: it doesn’t overlap with other extensions.",
+    "conflicts.previewFound": "Against {count} installed with full page access: {conflicts} conflict(s), {notes} note(s). Installing is still up to you.",
+    "conflicts.previewNone": "No overlap with the {count} installed with full page access.",
+    "conflicts.installedFound": "{conflicts} conflict(s), {notes} note(s).",
+    "conflicts.installedNone": "No overlap among them.",
+    "conflicts.checked": "Checked: {names}",
+    "conflicts.skipped": "Left out (no full page access, they don’t share the page): {names}",
+    "conflicts.counts": "{conflicts} conflict(s), {notes} note(s)",
+    "conflicts.conflict": "conflict",
+    "conflicts.note": "note",
+    "conflicts.defines": "takes it",
+    "conflicts.reads": "reads it",
+    "conflicts.copy": "Copy the results",
+    "conflicts.copied": "Results copied.",
+    "conflicts.kind.global": "global",
+    "conflicts.kind.element": "custom element",
+    "conflicts.kind.id": "element id",
+    "conflicts.kind.storage-key": "storage key",
+    "conflicts.kind.database": "database",
+    "conflicts.kind.symbol": "shared symbol",
+    "conflicts.kind.event": "event",
+    "conflicts.kind.shortcut": "shortcut (a guess)",
+    "conflicts.kind.fetch": "wraps fetch",
+    "conflicts.kind.command": "Dispensa command",
+    "conflicts.kind.css": "style !important",
+    "lists.heading": "Other recommended lists",
+    "help.lists": 'A list someone else publishes as a JSON file (kind "me-fetchy.catalog"). It only gives addresses: each extension still installs alone, through its preview, and you approve it in Marinara.',
+    "lists.add": "Add list",
+    "lists.refresh": "Read again",
+    "lists.preview": "Preview",
+    "lists.added": "Added “{name}” ({count} extensions).",
+    "lists.error.not-https": "A list’s address must start with https://.",
+    "lists.error.not-found": "No file at that address.",
+    "lists.error.not-a-list": 'That file is not a recommended list (kind "me-fetchy.catalog").',
+    "lists.error.too-many": "You already have {count} lists: delete one first.",
+    "copy.byHand.title": "Copy it by hand",
+    "copy.byHand.body": "This browser won’t copy from here (Marinara is reached over plain http). The text below is selected: press Ctrl+C (⌘C on a Mac).",
+    "action.enable": "Switch on",
+    "enable.confirm.title": "Switch “{name}” back on?",
+    "enable.confirm.body": "It is the same code you approved before ({hash}). It has full page access: it can read and change everything in Marinara, API keys and chats included.",
+    "enable.ack.fullPage": "I know this code gets access to the whole page.",
+    "result.enabled": "Switched “{name}” back on. Reload the page to be sure it runs.",
+    "error.engine.needs-approval": "“{name}” needs a new approval in Marinara: its code is not the code that was approved. Settings → Addons → External Extensions → Review and Run.",
+    "action.checkNow": "Check now",
+    "delete.ask": "What should happen to “{name}”?",
+    "delete.engine": "Delete from Marinara",
+    "delete.unlink": "Only unlink from Fetchy",
+    "delete.unlink.note": "Unlinking leaves the extension in Marinara as it is; Fetchy stops checking it for updates. Link it again from its row.",
+    "delete.missing": "Marinara no longer has “{name}”. Take it off Fetchy’s list?",
+    "delete.fromList": "Take off the list",
+    "auto.group": "Automatic",
+    "result.rolledBack.autoOff": "Automatic updates for it are now off, so the next one doesn’t undo the rollback.",
+    "select.start": "Select",
+    "select.done": "Done",
+    "select.count": "{count} selected",
+    "select.all": "Select all",
+    "select.hide": "Hide",
+    "select.show": "Show again",
+    "select.tag": "Add a tag…",
+    "hidden.heading": "Hidden ({count})",
+    "hidden.updates": "{count} with an update",
     "action.reinstall": "Install again",
     "result.disabled": "Switched “{name}” off.",
     "action.more": "More",
@@ -877,8 +1179,6 @@
     "action.updateTracked": "{name} 업데이트",
     "action.cancel": "취소",
     "action.busy": "처리 중…",
-    "action.open": "소스 열기",
-    "action.check": "업데이트 확인",
     "action.checkAll": "모두 확인",
     "result.selfUpdatedOn": "Fetchy 업데이트하고 다시 켰습니다.",
     "action.updateAll": "모두 업데이트",
@@ -889,9 +1189,6 @@
     "result.updatedAll": "{total}개 중 {ok}개 업데이트했습니다.",
     "result.updatedAllOne": "{name}: {text}",
     "result.nothingToUpdate": "업데이트할 것이 없습니다. 먼저 “모두 확인”을 누르세요.",
-    "action.forget": "제거",
-    "action.forget.listOnly": "목록에서만 제거",
-    "action.forget.engine": "Marinara에서도 삭제",
     "action.confirmForget": '"{name}"을(를) 제거할까요?',
     "result.created": "“{name}” 설치했습니다. 승인하면 켜집니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
     "result.updated": "“{name}” 업데이트했습니다. 다시 승인하면 켜집니다: 설정 → 애드온 → 외부 확장 → Review and Run.",
@@ -1027,6 +1324,205 @@
     "action.disable": "끄기",
     "action.delete": "삭제",
     "action.confirmDelete": "“{name}”을(를) Marinara에서 삭제할까요?",
+    "notify.title": "확장 업데이트 {count}개",
+    "notify.open": "열기",
+    "notify.later": "나중에",
+    "anchor.hasUpdate": "업데이트가 있어요",
+    "self.newVersion": "Fetchy 새 판이 나왔어요: {version}.",
+    "self.addSource": "출처로 추가해 업데이트",
+    "option.notify": "업데이트 알림",
+    "help.notify": "Marinara를 열고 조금 뒤, 6시간에 한 번 출처마다 manifest.json(작은 파일, 코드나 GitHub API 아님)만 읽어 새 버전이 있으면 알려 줍니다. 같은 버전은 한 번만 알려요.",
+    "changes.heading": "바뀐 내역",
+    "changes.loading": "커밋을 읽는 중…",
+    "changes.noBase": "Fetchy가 어느 커밋에서 설치했는지 몰라요(0.9 전에 설치했거나, 되돌렸거나, 패널이 닫힌 동안 업데이트됨). GitHub에서 내역을 보세요.",
+    "changes.more": "{count}개보다 많아요. 나머지는 GitHub에서.",
+    "changes.none": "설치한 커밋 뒤로 이 폴더에 바뀐 커밋이 없어요.",
+    "changes.history": "GitHub 내역",
+    "repo.archived": "보관됨",
+    "repo.archived.title": "GitHub에서 저장소가 보관(archived)됐어요. 작성자가 더 이상 관리하지 않아요. 마지막 push: {date}",
+    "repo.stale": "6개월 이상 갱신 없음",
+    "repo.stale.title": "저장소에 6개월 넘게 push가 없어요. 마지막 push: {date}",
+    "action.diagnostics": "진단 복사",
+    "help.diagnostics": "버그 신고에 붙일 글을 복사합니다: Marinara·Fetchy 버전, 관문 상태, 브라우저, 확장마다 버전·상태·출처·마지막 확인, 최근 변경 기록. 코드, 저장 데이터, 관리자 비밀은 넣지 않아요(비밀은 있는지만).",
+    "result.diagnosticsCopied": "진단 정보를 복사했어요. 신고 글에 붙여 넣으세요.",
+    "wizard.title": "처음 설정",
+    "wizard.stepOf": "{step}/{total} · {name}",
+    "wizard.skip": "건너뛰기",
+    "wizard.back": "이전",
+    "wizard.next": "다음",
+    "wizard.finish": "끝내기",
+    "wizard.again": "처음 설정 다시 보기",
+    "wizard.status.heading": "Marinara가 허락하는 것",
+    "wizard.status.intro": "Fetchy는 Marinara가 들여 주는 것만 설치할 수 있어요. ✗가 있으면 무엇을 바꿀지 적어 두었어요.",
+    "wizard.status.env": "서버 .env의 ENABLE_EXTERNAL_EXTENSIONS=true",
+    "wizard.status.switch": "“외부 확장 가져오기 허용”이 켜져 있음",
+    "wizard.status.admin": "Fetchy가 확장을 관리할 수 있음(Admin Access)",
+    "wizard.status.adminFix": "원격 Marinara라면: 서버 .env에 ADMIN_SECRET을 정하고, 설정 → Admin Access에 그 비밀을 넣은 뒤 다시 열어 주세요.",
+    "wizard.status.sandbox": "서버 확장 샌드박스",
+    "wizard.status.sandboxNote": "서버에서 도는 확장에만 필요해요. FigCake 확장은 브라우저에서 돌아요.",
+    "wizard.pick.heading": "고르기",
+    "wizard.pick.intro": "설치할 FigCake 확장을 고르세요. 모두 꺼진 채로 들어가고, Marinara에서 승인해야 켜져요.",
+    "wizard.options.heading": "옵션",
+    "wizard.install.heading": "설치",
+    "wizard.install.none": "고른 것이 없어요. 이전으로 돌아가 고르거나 그냥 넘어가세요.",
+    "wizard.approve.heading": "Marinara에서 승인",
+    "wizard.approve.how": "설정 → 애드온 → 외부 확장에서 아래 확장을 하나씩 열고 Review and Run으로 코드를 읽고 승인하세요. 그 화면의 해시가 여기 해시와 같아야 해요. 그다음 「다시 확인」을 누르세요.",
+    "wizard.approve.none": "Marinara에 아직 FigCake 확장이 없어요.",
+    "wizard.approve.recheck": "다시 확인",
+    "storage.title": "저장 공간",
+    "storage.open": "저장 공간",
+    "help.storage": "확장마다 Marinara에 저장한 데이터(확장당 최대 1,000,000바이트)를 하나씩 차례로 잽니다. 파일로 백업하고, 파일에서 복원하고, 비울 수 있어요. 켜져 있는 확장만 잴 수 있어요.",
+    "storage.measure": "다시 재기",
+    "storage.measuring": "재는 중…",
+    "storage.off": "켜져 있을 때만 잴 수 있어요.",
+    "storage.failed": "읽지 못했어요: {error}",
+    "storage.of": "{size} / 1 MB",
+    "storage.topKeys": "큰 키 {count}개",
+    "storage.backup": "백업",
+    "storage.restore": "복원…",
+    "storage.clear": "비우기…",
+    "storage.backedUp": "“{name}”의 데이터를 파일로 저장했어요.",
+    "storage.file.not-json": "JSON 파일이 아니에요.",
+    "storage.file.not-a-backup": "Fetchy 백업 파일이 아니에요.",
+    "storage.file.not-in-backup": "이 백업에는 “{name}”의 데이터가 없어요.",
+    "storage.file.too-large": "데이터가 Marinara 한도(1,000,000바이트)를 넘어요.",
+    "storage.restore.title": "“{name}”에 {size}를 복원할까요?",
+    "storage.restore.otherName": "이 파일은 “{name}”이 아니라 “{from}”에서 저장한 거예요.",
+    "storage.restore.otherVersion": "이 파일은 버전 {from}에서 저장했어요. 지금은 {version}이에요.",
+    "storage.restore.body": "먼저 지금 데이터를 파일로 저장한 뒤, 지우고 파일의 데이터를 넣어요. 끝나면 페이지를 새로고침하세요.",
+    "storage.restore.go": "지금 데이터 저장하고 복원",
+    "storage.restore.noBackup": "아무것도 바꾸지 않았어요. 지금 데이터를 먼저 저장하지 못했어요({error}).",
+    "storage.restore.failed": "“{name}” 복원에 실패했어요: {error}. 전 데이터는 방금 저장한 파일에 있으니 그 파일로 복원하세요.",
+    "storage.restored": "“{name}”의 데이터를 복원했어요.",
+    "storage.clear.first": "비우면 “{name}”의 데이터가 모두 지워져요. 먼저 파일로 저장해요.",
+    "storage.clear.backup": "파일로 저장하고 계속",
+    "storage.clear.type": "비우려면 “{name}”을(를) 그대로 입력하세요.",
+    "storage.clear.go": "비우기",
+    "storage.cleared": "“{name}”의 데이터를 비웠어요. 방금 저장한 파일에 들어 있어요.",
+    "storage.reloadHint": "확장은 시작할 때 데이터를 읽어요.",
+    "storage.reload": "페이지 새로고침",
+    "storage.browser": "이 브라우저 안",
+    "help.storage.browser": "이 사이트가 브라우저 자체에 저장한 것을 이름별로 묶어 보여 줘요. 크기와 이름만 보고, 여기서는 아무것도 바꾸지 않아요.",
+    "storage.browser.usage": "사용 중: {usage} / {quota}",
+    "storage.browser.keys": "키 {count}개",
+    "storage.browser.noList": "이 브라우저는 데이터베이스 목록을 알려 주지 않아요.",
+    "profiles.title": "켜짐 묶음",
+    "help.profiles": "지금 켜진 확장을 이름 붙여 저장하고, 나중에 그 묶음으로 바꿉니다. 묶음에 없는 것은 끄고, 묶음에 있는 것은 승인한 코드 그대로일 때만 다시 켜요. Fetchy는 늘 켜 둬요.",
+    "profiles.name": "묶음 이름",
+    "profiles.save": "지금 켜진 것 저장",
+    "profiles.count": "묶음 {count} / {max}",
+    "profiles.size": "{count}개 켜짐",
+    "profiles.apply": "적용",
+    "profiles.none": "아직 묶음이 없어요.",
+    "profiles.full": "묶음이 이미 {count}개예요. 하나를 먼저 지우세요.",
+    "profiles.saved": "“{name}”을(를) 저장했어요({count}개 켜짐).",
+    "switch.willOff": "끌 것: {names}",
+    "switch.willOn": "다시 켤 것(승인한 코드 그대로): {names}",
+    "switch.needsApproval": "Marinara에서 다시 승인해야 해서 꺼 둔 것: {names}",
+    "switch.missing": "{count}개는 Marinara에 더 이상 없어요.",
+    "switch.nothing": "바꿀 것이 없어요.",
+    "switch.off": "껐어요: {names}",
+    "switch.on": "다시 켰어요: {names}",
+    "switch.failed": "{name}: {error}",
+    "switch.reloadHint": "페이지를 새로고침하면 확실해요.",
+    "bisect.title": "문제 확장 찾기",
+    "help.bisect": "켜진 확장의 반을 끄고, 새로고침한 뒤 문제가 남았는지 물어 범위를 반씩 줄여 하나를 찾아요. Fetchy는 켜 두고, 그동안 자동 업데이트는 쉬어요. 언제든 원래대로 되돌릴 수 있어요.",
+    "bisect.intro": "지금 켜진 것의 반을 꺼요. 페이지를 새로고침하고 문제가 생기던 일을 해 본 뒤, 문제가 남았는지 답하세요. 몇 번이면 하나를 찾아요.",
+    "bisect.limits": "혼자서 문제를 일으키는 확장 하나를 찾아요. 두 확장이 함께 있을 때만 생기는 문제는 못 찾을 수 있어요. 지금 켜진 확장만 대상이에요.",
+    "bisect.onNow": "지금 켜진 것({count}개):",
+    "bisect.ack": "페이지 전체에 접근하는 확장이 있어요. 찾는 동안 승인한 코드 그대로 다시 켜진다는 것을 알아요.",
+    "bisect.start": "시작",
+    "bisect.none": "Fetchy 말고 켜진 확장이 없어요.",
+    "bisect.reloadThenAnswer": "페이지를 새로고침한 뒤 여기서 답하세요.",
+    "bisect.question": "문제가 아직 있나요? (후보 {left}개)",
+    "bisect.testing": "지금 켜 둔 것: {names}",
+    "bisect.allOff": "모두 꺼 둠",
+    "bisect.yes": "네, 아직 있어요",
+    "bisect.no": "아니요, 사라졌어요",
+    "bisect.stop": "그만두고 되돌리기",
+    "bisect.found": "찾았어요: “{name}”({steps}번 만에).",
+    "bisect.notFound": "모두 꺼도 문제가 남았어요. 확장 때문은 아닌 것 같아요.",
+    "bisect.restore": "원래대로 되돌리기",
+    "bisect.restoreWithout": "“{name}”만 끈 채로 되돌리기",
+    "bisect.toast": "문제 확장을 찾는 중이에요. 문제가 아직 있나요?",
+    "bisect.toast.done": "문제 확장 찾기가 끝났어요.",
+    "backup.title": "전체 백업",
+    "help.backup": "출처 목록, 폴더와 태그, 고른 확장의 저장 데이터를 파일 하나로 담아 다른 브라우저나 Marinara로 옮겨요. 복원하면 출처 목록을 「목록 가져오기」처럼 되살려요.",
+    "backup.intro": "저장 데이터를 담을 확장(켜진 확장만 읽을 수 있어요):",
+    "backup.noData": "켜진 확장 중에 백업할 데이터가 있는 것이 없어요.",
+    "backup.save": "백업 파일 받기",
+    "backup.restore": "파일에서 복원…",
+    "backup.restoreNote": "복원하면 목록에 없는 출처만 더하고(자동 스위치는 끔), 폴더와 태그는 지금 없을 때만 가져와요. 저장 데이터는 나중에: 그 확장을 설치해 켠 뒤 저장 공간 → 복원에서 같은 파일을 고르세요.",
+    "backup.saved": "백업 파일을 받았어요(저장 데이터 {count}개).",
+    "backup.unread": "읽지 못한 것: {names}",
+    "backup.notOne": "Fetchy 전체 백업 파일이 아니에요.",
+    "backup.dataLater": "이 파일에는 {names}의 데이터도 있어요. 각각 설치해 켠 뒤 저장 공간 → 복원에서 이 파일로 복원하세요.",
+    "conflicts.heading": "겹치는 것",
+    "conflicts.preview": "충돌 가능성 분석",
+    "conflicts.installed": "충돌 존재 분석",
+    "conflicts.title": "확장끼리 겹치는 것",
+    "help.conflicts": "Fetchy가 코드를 실행하지 않고 글로만 읽어, 확장이 페이지에서 차지하는 이름(전역, 커스텀 요소, 요소 id, 저장 키, 명령, 단축키, !important 스타일)을 찾아요. 둘이 같은 이름을 차지하면 충돌, 한쪽은 차지하고 다른 쪽은 읽기만 하면 참고예요. 페이지를 함께 쓰는 건 full page access 확장뿐이고, 글로 찾은 것이라 근거 줄을 함께 보여 줘요.",
+    "conflicts.sandboxed": "full page access가 없어 따로 떨어진 샌드박스에서 돌아요. 다른 확장과 겹치지 않아요.",
+    "conflicts.previewFound": "설치된 full page 확장 {count}개와 비교: 충돌 {conflicts}개, 참고 {notes}개. 설치는 막지 않아요.",
+    "conflicts.previewNone": "설치된 full page 확장 {count}개와 겹치는 것이 없어요.",
+    "conflicts.installedFound": "충돌 {conflicts}개, 참고 {notes}개.",
+    "conflicts.installedNone": "서로 겹치는 것이 없어요.",
+    "conflicts.checked": "비교한 것: {names}",
+    "conflicts.skipped": "뺀 것(full page access가 없어 페이지를 함께 쓰지 않음): {names}",
+    "conflicts.counts": "충돌 {conflicts}개, 참고 {notes}개",
+    "conflicts.conflict": "충돌",
+    "conflicts.note": "참고",
+    "conflicts.defines": "차지함",
+    "conflicts.reads": "읽기만 함",
+    "conflicts.copy": "결과 복사",
+    "conflicts.copied": "결과를 복사했어요.",
+    "conflicts.kind.global": "전역",
+    "conflicts.kind.element": "커스텀 요소",
+    "conflicts.kind.id": "요소 id",
+    "conflicts.kind.storage-key": "저장 키",
+    "conflicts.kind.database": "데이터베이스",
+    "conflicts.kind.symbol": "공유 심볼",
+    "conflicts.kind.event": "이벤트",
+    "conflicts.kind.shortcut": "단축키(어림)",
+    "conflicts.kind.fetch": "fetch 감싸기",
+    "conflicts.kind.command": "Dispensa 명령",
+    "conflicts.kind.css": "스타일 !important",
+    "lists.heading": "다른 추천 목록",
+    "help.lists": '다른 사람이 JSON 파일(kind "me-fetchy.catalog")로 올린 목록이에요. 주소만 알려 줄 뿐, 설치는 하나씩 미리보기를 보고 하고 Marinara에서 승인해요.',
+    "lists.add": "목록 추가",
+    "lists.refresh": "다시 읽기",
+    "lists.preview": "미리보기",
+    "lists.added": "“{name}”을(를) 추가했어요(확장 {count}개).",
+    "lists.error.not-https": "목록 주소는 https://로 시작해야 해요.",
+    "lists.error.not-found": "그 주소에 파일이 없어요.",
+    "lists.error.not-a-list": '추천 목록 파일(kind "me-fetchy.catalog")이 아니에요.',
+    "lists.error.too-many": "목록이 이미 {count}개예요. 하나를 먼저 지우세요.",
+    "copy.byHand.title": "직접 복사하세요",
+    "copy.byHand.body": "이 브라우저는 여기서 자동으로 복사하지 못해요(Marinara가 https가 아닌 주소). 아래 글이 선택되어 있으니 Ctrl+C(Mac은 ⌘C)를 누르세요.",
+    "action.enable": "켜기",
+    "enable.confirm.title": "“{name}”을(를) 다시 켤까요?",
+    "enable.confirm.body": "전에 승인한 그 코드 그대로예요({hash}). 이 확장은 페이지 전체에 접근할 수 있어 API 키와 채팅을 포함한 Marinara의 모든 것을 읽고 바꿀 수 있습니다.",
+    "enable.ack.fullPage": "이 코드가 페이지 전체에 접근함을 알아요.",
+    "result.enabled": "“{name}”을(를) 다시 켰어요. 페이지를 새로고침하면 확실해요.",
+    "error.engine.needs-approval": "“{name}”은(는) Marinara에서 다시 승인해야 해요. 지금 코드가 전에 승인한 코드와 다릅니다. 설정 → 애드온 → 외부 확장 → Review and Run.",
+    "action.checkNow": "지금 확인",
+    "delete.ask": "“{name}”을(를) 어떻게 할까요?",
+    "delete.engine": "Marinara에서 삭제",
+    "delete.unlink": "Fetchy 연결만 끊기",
+    "delete.unlink.note": "연결만 끊으면 확장은 Marinara에 그대로 남고, Fetchy가 업데이트 확인을 그만둡니다. 그 줄에서 다시 연결할 수 있어요.",
+    "delete.missing": "Marinara에 “{name}”이(가) 더 이상 없습니다. Fetchy 목록에서 뺄까요?",
+    "delete.fromList": "목록에서 빼기",
+    "auto.group": "자동",
+    "result.rolledBack.autoOff": "다음 자동 업데이트가 되돌린 것을 다시 올리지 않도록, 이 확장의 자동 업데이트를 껐어요.",
+    "select.start": "선택",
+    "select.done": "끝내기",
+    "select.count": "{count}개 선택",
+    "select.all": "전체 선택",
+    "select.hide": "숨기기",
+    "select.show": "다시 보이기",
+    "select.tag": "태그 붙이기…",
+    "hidden.heading": "숨긴 확장 {count}개",
+    "hidden.updates": "업데이트 {count}개",
     "action.reinstall": "다시 설치",
     "result.disabled": "“{name}”을(를) 껐습니다.",
     "action.more": "더보기",
@@ -1213,8 +1709,8 @@
 
   // src/hash.ts
   var encoder = new TextEncoder();
-  async function sha256Hex(text) {
-    return digestHex(typeof text === "string" ? encoder.encode(text) : text);
+  async function sha256Hex(text2) {
+    return digestHex(typeof text2 === "string" ? encoder.encode(text2) : text2);
   }
   function engineHashPayload(draft) {
     const payload = draft.runtime === "server" ? ["server", "", "", draft.serverJs ?? ""] : ["client", draft.css ?? "", draft.js ?? "", ""];
@@ -1229,7 +1725,7 @@
   // src/diff.ts
   var CODE_ROLES = ["css", "js", "serverJs"];
   var encoder2 = new TextEncoder();
-  var splitLines = (text) => text.split(/\r?\n/);
+  var splitLines = (text2) => text2.split(/\r?\n/);
   function lineDelta(before, after) {
     const counts = /* @__PURE__ */ new Map();
     for (const line of splitLines(before)) counts.set(line, (counts.get(line) ?? 0) + 1);
@@ -1243,9 +1739,9 @@
     for (const n of counts.values()) removed += n;
     return { added, removed };
   }
-  async function side(text) {
-    if (text === null) return null;
-    return { bytes: encoder2.encode(text).byteLength, lines: text ? splitLines(text).length : 0, sha256: await sha256Hex(text) };
+  async function side(text2) {
+    if (text2 === null) return null;
+    return { bytes: encoder2.encode(text2).byteLength, lines: text2 ? splitLines(text2).length : 0, sha256: await sha256Hex(text2) };
   }
   async function compareCode(before, after) {
     const changes = [];
@@ -1282,11 +1778,11 @@
     if (last && MANIFEST_NAMES.includes(last)) parts.pop();
     return parts.join("/");
   }
-  function splitRef(text) {
-    const at = text.lastIndexOf("@");
-    if (at <= 0) return { body: text, ref: null };
-    const ref = text.slice(at + 1).trim();
-    return ref ? { body: text.slice(0, at), ref } : { body: text, ref: null };
+  function splitRef(text2) {
+    const at = text2.lastIndexOf("@");
+    if (at <= 0) return { body: text2, ref: null };
+    const ref = text2.slice(at + 1).trim();
+    return ref ? { body: text2.slice(0, at), ref } : { body: text2, ref: null };
   }
   function repoSource(owner, repo, ref, path) {
     if (!SEGMENT.test(owner) || !SEGMENT.test(repo)) {
@@ -1301,40 +1797,40 @@
     return null;
   }
   function parseSourceUrl(input) {
-    const text = input.trim();
-    if (!text) throw new SourceUrlError("empty", "Enter a URL");
-    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return shorthandSource(text);
+    const text2 = input.trim();
+    if (!text2) throw new SourceUrlError("empty", "Enter a URL");
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text2)) return shorthandSource(text2);
     let url;
     try {
-      url = new URL(text);
+      url = new URL(text2);
     } catch {
-      throw new SourceUrlError("unsupported", `Not a valid URL: ${text}`);
+      throw new SourceUrlError("unsupported", `Not a valid URL: ${text2}`);
     }
     if (url.protocol !== "https:") throw new SourceUrlError("not-https", "Only https:// URLs are supported");
     const host = url.hostname.toLowerCase();
-    if (host === "github.com" || host === "www.github.com") return githubPageSource(url, text);
+    if (host === "github.com" || host === "www.github.com") return githubPageSource(url, text2);
     if (host === "raw.githubusercontent.com") return rawSource(url);
     const file = fileSource(url);
     if (file) return file;
-    throw new SourceUrlError("unsupported", `Unsupported URL (use a GitHub repository, a manifest.json URL or a .zip URL): ${text}`);
+    throw new SourceUrlError("unsupported", `Unsupported URL (use a GitHub repository, a manifest.json URL or a .zip URL): ${text2}`);
   }
-  function shorthandSource(text) {
-    const { body, ref } = splitRef(text);
-    const parts = cleanPath(body).split("/").filter(Boolean);
-    if (parts.length < 2) throw new SourceUrlError("unsupported", `Not a URL or owner/repo: ${text}`);
+  function shorthandSource(text2) {
+    const { body: body2, ref } = splitRef(text2);
+    const parts = cleanPath(body2).split("/").filter(Boolean);
+    if (parts.length < 2) throw new SourceUrlError("unsupported", `Not a URL or owner/repo: ${text2}`);
     const [owner, repo, ...rest] = parts;
     return repoSource(owner, repo, ref, rest.join("/"));
   }
-  function githubPageSource(url, text) {
-    const { body, ref: atRef } = splitRef(url.pathname);
-    const parts = cleanPath(body).split("/").filter(Boolean);
+  function githubPageSource(url, text2) {
+    const { body: body2, ref: atRef } = splitRef(url.pathname);
+    const parts = cleanPath(body2).split("/").filter(Boolean);
     if (parts.length < 2) throw new SourceUrlError("bad-github-path", "A GitHub URL needs /owner/repo");
     const [owner, repo, mode, ref, ...rest] = parts;
     if (mode === "tree" || mode === "blob" || mode === "raw") {
       if (!ref) throw new SourceUrlError("bad-github-path", `A /${mode}/ URL needs a branch`);
       return repoSource(owner, repo, ref, rest.join("/"));
     }
-    if (mode) throw new SourceUrlError("bad-github-path", `Unsupported GitHub URL (use the repository or a /tree/<branch>/ folder): ${text}`);
+    if (mode) throw new SourceUrlError("bad-github-path", `Unsupported GitHub URL (use the repository or a /tree/<branch>/ folder): ${text2}`);
     return repoSource(owner, repo, atRef, "");
   }
   function rawSource(url) {
@@ -1569,9 +2065,9 @@
     const bytes = await fetchBytes(url, options, maxBytes, budget);
     return bytes === null ? null : new TextDecoder("utf-8").decode(bytes);
   }
-  function parseJson(text, url) {
+  function parseJson(text2, url) {
     try {
-      return JSON.parse(text.replace(/^\uFEFF/, ""));
+      return JSON.parse(text2.replace(/^\uFEFF/, ""));
     } catch (e) {
       throw new FetchError("bad-json", e instanceof Error ? e.message : String(e), url);
     }
@@ -1582,8 +2078,8 @@
       if (seen.has(name.toLowerCase())) continue;
       seen.add(name.toLowerCase());
       try {
-        const text = await read(name);
-        if (text != null && text.trim()) return { path: name, text };
+        const text2 = await read(name);
+        if (text2 != null && text2.trim()) return { path: name, text: text2 };
       } catch {
       }
     }
@@ -1592,36 +2088,36 @@
   async function defaultBranch(owner, repo, options, budget) {
     const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     try {
-      const text = await fetchText(url, { ...options, freshest: false }, 256 * 1024, budget);
-      if (text == null) return null;
-      const info = JSON.parse(text);
+      const text2 = await fetchText(url, { ...options, freshest: false }, 256 * 1024, budget);
+      if (text2 == null) return null;
+      const info = JSON.parse(text2);
       return typeof info.default_branch === "string" && info.default_branch ? info.default_branch : null;
     } catch {
       return null;
     }
   }
-  var COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  var COMMIT_SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
   async function commitOf(owner, repo, ref, options, budget) {
-    if (COMMIT_SHA.test(ref)) return ref;
+    if (COMMIT_SHA2.test(ref)) return ref;
     const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
     const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodedRef}`;
     try {
       const bytes = await fetchBytes(url, { ...options, freshest: false }, 1024, budget, "application/vnd.github.sha");
       const sha = bytes === null ? "" : new TextDecoder("utf-8").decode(bytes).trim().toLowerCase();
-      return COMMIT_SHA.test(sha) ? sha : null;
+      return COMMIT_SHA2.test(sha) ? sha : null;
     } catch {
       return null;
     }
   }
   async function readConsistently(manifestUrl, manifestText, reread, read) {
-    let text = manifestText;
+    let text2 = manifestText;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const manifest = parseJson(text, manifestUrl);
+      const manifest = parseJson(text2, manifestUrl);
       const normalized = await normalizeManifest(manifest, read);
       const again = await reread();
       if (again === null) throw new FetchError("source-changed", "the manifest disappeared during the download", manifestUrl);
-      if (again === text) return { manifest, normalized, manifestText: text };
-      text = again;
+      if (again === text2) return { manifest, normalized, manifestText: text2 };
+      text2 = again;
     }
     throw new FetchError("source-changed", "the manifest kept changing during the download", manifestUrl);
   }
@@ -1636,8 +2132,8 @@
       for (const filename of MANIFEST_FILENAMES) {
         const manifestUrl = rawFileUrl(source.owner, source.repo, ref, dir ? `${dir}/${filename}` : filename);
         const readManifest = () => fetchText(manifestUrl, options, LIMITS.textFileBytes, budget);
-        const text = await readManifest();
-        if (text == null) continue;
+        const text2 = await readManifest();
+        if (text2 == null) continue;
         const readerAt = (at, opts) => async (path) => {
           const clean = normalizePath(path);
           if (!clean) return null;
@@ -1662,13 +2158,13 @@
         const commit = options.pinCommit ? await commitOf(source.owner, source.repo, ref, options, budget) : null;
         if (commit) {
           const atCommit = { ...options, freshest: false };
-          const pinnedText = commit === ref ? text : await fetchText(rawFileUrl(source.owner, source.repo, commit, dir ? `${dir}/${filename}` : filename), atCommit, LIMITS.textFileBytes, budget);
+          const pinnedText = commit === ref ? text2 : await fetchText(rawFileUrl(source.owner, source.repo, commit, dir ? `${dir}/${filename}` : filename), atCommit, LIMITS.textFileBytes, budget);
           if (pinnedText != null) {
             const manifest2 = parseJson(pinnedText, manifestUrl);
             return done(manifest2, await normalizeManifest(manifest2, readerAt(commit, atCommit)), commit, commit, atCommit);
           }
         }
-        const { manifest, normalized } = await readConsistently(manifestUrl, text, readManifest, readerAt(ref, options));
+        const { manifest, normalized } = await readConsistently(manifestUrl, text2, readManifest, readerAt(ref, options));
         return done(manifest, normalized, null, ref, options);
       }
       if (!source.ref && i === candidates.length - 1 && candidates.length === DEFAULT_BRANCHES.length) {
@@ -1676,18 +2172,18 @@
         if (branch && !candidates.includes(branch)) candidates.push(branch);
       }
     }
-    const where = dir ? `${source.owner}/${source.repo}/${dir}` : `${source.owner}/${source.repo}`;
-    throw new FetchError("manifest-not-found", `No manifest.json in ${where} (tried ${tried.join(", ")})`, browseUrl(source), 404, tried);
+    const where2 = dir ? `${source.owner}/${source.repo}/${dir}` : `${source.owner}/${source.repo}`;
+    throw new FetchError("manifest-not-found", `No manifest.json in ${where2} (tried ${tried.join(", ")})`, browseUrl(source), 404, tried);
   }
   async function fromManifestUrl(source, options) {
     const budget = new Budget(options.budgetBytes ?? DEFAULT_BUDGET_BYTES);
     const readManifest = () => fetchText(source.url, options, LIMITS.textFileBytes, budget);
-    const text = await readManifest();
-    if (text == null) throw new FetchError("manifest-not-found", `HTTP 404`, source.url, 404);
+    const text2 = await readManifest();
+    if (text2 == null) throw new FetchError("manifest-not-found", `HTTP 404`, source.url, 404);
     const base = directoryOf(source.url);
     const resolve = (path) => new URL(normalizePath(path), base).href;
     const read = async (path) => normalizePath(path) ? fetchText(resolve(path), options, LIMITS.textFileBytes, budget) : null;
-    const { manifest, normalized } = await readConsistently(source.url, text, readManifest, read);
+    const { manifest, normalized } = await readConsistently(source.url, text2, readManifest, read);
     return {
       source,
       ref: null,
@@ -1771,6 +2267,22 @@
       case "zip-url":
         return fromZip(source, options);
     }
+  }
+  async function fetchSmallText(url, options, maxBytes) {
+    return fetchText(url, options, maxBytes, new Budget(maxBytes));
+  }
+  async function fetchManifestVersion(source, ref, options) {
+    if (source.kind === "zip-url") return null;
+    const urls = source.kind === "manifest-url" ? [source.url] : MANIFEST_FILENAMES.map((name) => {
+      const dir = normalizePath(source.path);
+      return rawFileUrl(source.owner, source.repo, ref ?? source.ref ?? DEFAULT_BRANCHES[0], dir ? `${dir}/${name}` : name);
+    });
+    for (const url of urls) {
+      const text2 = await fetchSmallText(url, { ...options, freshest: true }, LIMITS.textFileBytes);
+      if (text2 == null) continue;
+      return manifestVersion(parseJson(text2, url));
+    }
+    return null;
   }
 
   // src/version.ts
@@ -1899,6 +2411,8 @@
       extensionId: extension.id,
       installedVersion: extension.version ?? null,
       installedHash,
+      // the commit is that of the code Marinara now holds only when it is the downloaded code
+      ...installedHash === prepared.contentHash && prepared.pkg.commit ? { installedCommit: prepared.pkg.commit } : {},
       installedAt: iso,
       lastCheckedAt: iso,
       latest: { version: prepared.draft.version, hash: prepared.contentHash, state, checkedAt: iso },
@@ -1939,7 +2453,8 @@
   }
   async function installUnlogged(prepared, deps, mode) {
     const now = nowOf(deps);
-    const previous = prepared.tracked ?? (mode.kind !== "create" ? (await deps.store.load()).find((r) => r.extensionId === mode.extensionId) ?? null : null);
+    const stored = await deps.store.load();
+    const previous = (prepared.tracked ? stored.find((r) => r.id === prepared.tracked?.id) ?? prepared.tracked : null) ?? (mode.kind !== "create" ? stored.find((r) => r.extensionId === mode.extensionId) ?? null : null);
     if (mode.kind === "create") {
       const extension2 = await deps.client.create(prepared.draft);
       await verifyAnswer(prepared, extension2, true);
@@ -2048,8 +2563,7 @@
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 3, todo.length)) }, worker));
-    if (todo.length) await deps.store.save(checked);
-    return checked;
+    return todo.length ? deps.store.commit(changesBetween(records, checked, true)) : records;
   }
   async function updateSource(record, deps) {
     const pkg = await fetchPackage(pinned(record), { fetch: deps.fetch, freshest: true, readme: false, pinCommit: true });
@@ -2095,12 +2609,13 @@
       await log(deps, { action: "rollback", result: "failed", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: { version: null, hash: contentHash, capabilities: [] }, detail: e instanceof Error ? e.message : String(e) });
       throw e;
     }
-    await log(deps, { action: "rollback", result: "ok", extensionId: extension.id, name: extension.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(extension), detail: null });
+    const autoUpdateOff = record.autoUpdate === true;
+    await log(deps, { action: "rollback", result: "ok", extensionId: extension.id, name: extension.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(extension), detail: autoUpdateOff ? "automatic updates switched off, so the next one does not undo the rollback" : null });
     const now = nowOf(deps).toISOString();
     const latest = record.latest ? { ...record.latest, state: updateState({ version: extension.version, hash: extension.contentHash }, { version: record.latest.version, hash: record.latest.hash }) } : null;
-    const updated = { ...record, installedVersion: extension.version, installedHash: extension.contentHash, installedAt: now, latest };
-    await deps.store.upsert(updated);
-    return { record: updated, extension };
+    const updated = { ...record, installedVersion: extension.version, installedHash: extension.contentHash, installedCommit: void 0, installedAt: now, latest, autoUpdate: false };
+    await deps.store.commit([{ before: record, after: updated }]);
+    return { record: updated, extension, autoUpdateOff };
   }
   async function forgetSource(record, deps, deleteFromEngine) {
     const entry = { action: deleteFromEngine ? "delete" : "forget", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: null };
@@ -2133,19 +2648,19 @@
         return marked;
       }
       if (engine.contentHash !== record.installedHash && record.latest && record.latest.hash === engine.contentHash) {
-        const completed = { ...record, installedVersion: engine.version, installedHash: engine.contentHash, installedAt: engine.updatedAt || now, latest: { ...record.latest, state: "up-to-date" }, lastError: null };
+        const completed = { ...record, installedVersion: engine.version, installedHash: engine.contentHash, installedCommit: void 0, installedAt: engine.updatedAt || now, latest: { ...record.latest, state: "up-to-date" }, lastError: null };
         changed.push(completed);
         void log(deps, { action: "update", result: "ok", extensionId: engine.id, name: engine.name, source: record.input, ref: record.ref, from: { version: record.installedVersion, hash: record.installedHash, capabilities: [] }, to: sideOf(engine), detail: "completed after an interrupted update (reconciled on open)" });
         return completed;
       }
       return record;
     });
-    if (changed.length) await deps.store.save(next);
+    if (changed.length) await deps.store.commit(changesBetween(records, next));
     return changed;
   }
   async function setAutoApprove(record, value, deps) {
     const updated = { ...record, autoApprove: value };
-    await deps.store.upsert(updated);
+    await deps.store.commit([{ before: record, after: updated }]);
     await log(deps, { action: "approve", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "auto re-approval switched on by the user" : "auto re-approval switched off" });
     return updated;
   }
@@ -2156,6 +2671,19 @@
       return result;
     } catch (e) {
       await log(deps, { action: "disable", result: "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+  async function enableExtension(extension, deps, acknowledgedFullPage) {
+    const fullPage = extension.capabilities.includes(FULL_PAGE_ACCESS);
+    if (fullPage && !acknowledgedFullPage) throw new EngineApiError("validation", 0, "full page access was not acknowledged");
+    try {
+      const result = await deps.client.enable(extension.id, extension.contentHash, fullPage);
+      await log(deps, { action: "enable", result: "ok", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: sideOf(result), detail: "switched back on with the code approved before" });
+      return result;
+    } catch (e) {
+      const refused = e instanceof EngineApiError && e.code === "needs-approval";
+      await log(deps, { action: "enable", result: refused ? "refused" : "failed", extensionId: extension.id, name: extension.name, source: null, ref: null, from: sideOf(extension), to: null, detail: e instanceof Error ? e.message : String(e) });
       throw e;
     }
   }
@@ -2193,13 +2721,14 @@
     const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray(parsed.sources) ? parsed.sources : null;
     if (!list) throw new SyntaxError("not an exported source list");
     const incoming = list.map(parseRecord).filter((r) => r !== null);
-    const merged = mergeImported(await store.load(), incoming);
-    if (merged.added) await store.save(merged.records);
+    const existing = await store.load();
+    const merged = mergeImported(existing, incoming);
+    if (merged.added) await store.commit(merged.records.slice(existing.length).map((after) => ({ before: null, after })));
     return { imported: merged.added, kept: merged.kept, different: merged.different, ignored: list.length - incoming.length };
   }
   async function setAutoUpdate(record, value, deps) {
     const updated = { ...record, autoUpdate: value };
-    await deps.store.upsert(updated);
+    await deps.store.commit([{ before: record, after: updated }]);
     await log(deps, { action: "check", result: "ok", extensionId: record.extensionId, name: record.name, source: record.input, ref: record.ref, from: null, to: null, detail: value ? "automatic updates switched on by the user" : "automatic updates switched off" });
     return updated;
   }
@@ -2228,7 +2757,7 @@
       let record = first;
       if (options.check) {
         record = await checkSource(first, deps);
-        await deps.store.upsert(record);
+        await deps.store.commit([{ before: first, after: record, fromInstall: true }]);
       }
       if (!hasUpdate(record)) continue;
       try {
@@ -2241,6 +2770,58 @@
       }
     }
     return out;
+  }
+
+  // src/notify.ts
+  var NOTIFY_EVERY_MS = 6 * 36e5;
+  var NOTIFY_DELAY_MS = 3e4;
+  var SELF_REPO = { owner: "FigCake", repo: "ME.Fetchy" };
+  var SELF_KEY = "fetchy";
+  var followsSelf = (records) => records.some((r) => r.source.kind === "github-repo" && r.source.owner.toLowerCase() === SELF_REPO.owner.toLowerCase() && r.source.repo.toLowerCase() === SELF_REPO.repo.toLowerCase());
+  function lookDue(lastAt, now, everyMs = NOTIFY_EVERY_MS) {
+    const at = lastAt ? Date.parse(lastAt) : NaN;
+    return !Number.isFinite(at) || at > now || now - at >= everyMs;
+  }
+  async function peekUpdates(records, fetch, running, concurrency = 3) {
+    const found = [];
+    const jobs = records.map((record) => async () => {
+      const version = await fetchManifestVersion(record.source, record.ref, { fetch, readme: false }).catch(() => null);
+      if (version && compareVersions(version, record.installedVersion) === 1) found.push({ key: record.id, version });
+    });
+    if (!followsSelf(records)) {
+      jobs.push(async () => {
+        const version = await fetchManifestVersion({ kind: "github-repo", ...SELF_REPO, ref: null, path: "" }, "main", { fetch, readme: false }).catch(() => null);
+        if (version && compareVersions(version, running) === 1) found.push({ key: SELF_KEY, version });
+      });
+    }
+    let next = 0;
+    const worker = async () => {
+      while (next < jobs.length) await jobs[next++]();
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker));
+    const order = new Map(records.map((r, i) => [r.id, i]));
+    return found.sort((a, b) => (order.get(a.key) ?? Infinity) - (order.get(b.key) ?? Infinity));
+  }
+  function unnoticed(found, noticed, records) {
+    const byId = new Map(records.map((r) => [r.id, r]));
+    return found.filter((p) => noticed[p.key] !== p.version && byId.get(p.key)?.latest?.version !== p.version);
+  }
+  function rememberNoticed(noticed, shown, records) {
+    const keep = /* @__PURE__ */ new Set([...records.map((r) => r.id), SELF_KEY]);
+    const out = {};
+    for (const [key, version] of Object.entries(noticed)) if (keep.has(key) && key !== "__proto__") out[key] = version;
+    for (const p of shown) out[p.key] = p.version;
+    return out;
+  }
+  function parseNoticed(raw) {
+    const out = {};
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+    for (const [key, value] of Object.entries(raw)) if (typeof value === "string" && key !== "__proto__") out[key] = value;
+    return out;
+  }
+  function stillNewer(peeked, records, running) {
+    const byId = new Map(records.map((r) => [r.id, r]));
+    return peeked.filter((p) => p.key === SELF_KEY ? compareVersions(p.version, running) === 1 : compareVersions(p.version, byId.get(p.key)?.installedVersion) === 1);
   }
 
   // src/organize.ts
@@ -2267,7 +2848,8 @@
       if (!v || typeof v !== "object" || key === "__proto__") continue;
       const folder = typeof v.folder === "string" && folderIds.has(v.folder) ? v.folder : void 0;
       const list = Array.isArray(v.tags) ? [...new Set(v.tags.filter((t) => typeof t === "string" && tagIds.has(t)))] : [];
-      if (folder || list.length) of[key] = { ...folder ? { folder } : {}, ...list.length ? { tags: list } : {} };
+      const hidden = v.hidden === true;
+      if (folder || list.length || hidden) of[key] = { ...folder ? { folder } : {}, ...list.length ? { tags: list } : {}, ...hidden ? { hidden: true } : {} };
     }
     return { folders, tags, of };
   }
@@ -2297,6 +2879,175 @@
     const now = o.of[key]?.tags ?? [];
     const tags = now.includes(tag) ? now.filter((t) => t !== tag) : [...now, tag];
     return normalizeOrganize({ ...o, of: { ...o.of, [key]: { ...o.of[key], tags } } });
+  }
+  function setHidden(o, keys, hidden) {
+    const of = { ...o.of };
+    for (const key of keys) of[key] = { ...of[key], hidden: hidden ? true : void 0 };
+    return normalizeOrganize({ ...o, of });
+  }
+  function addTagTo(o, keys, tag) {
+    const of = { ...o.of };
+    for (const key of keys) of[key] = { ...of[key], tags: [...of[key]?.tags ?? [], tag] };
+    return normalizeOrganize({ ...o, of });
+  }
+  var isHidden = (o, key) => o.of[key]?.hidden === true;
+
+  // src/profiles.ts
+  var PROFILE_LIMIT = 20;
+  var NAME_MAX2 = 40;
+  var isRecord4 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  var ids = (v) => Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string" && !!x))] : [];
+  function parseProfiles(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const p of raw) {
+      if (!isRecord4(p) || typeof p.id !== "string" || typeof p.name !== "string" || !p.name.trim() || out.some((x) => x.id === p.id)) continue;
+      out.push({ id: p.id, name: p.name.trim().slice(0, NAME_MAX2), ids: ids(p.ids), savedAt: typeof p.savedAt === "string" ? p.savedAt : "" });
+    }
+    return out.slice(0, PROFILE_LIMIT);
+  }
+  var switchedOn = (extensions, selfId) => extensions.filter((x) => x.enabled && x.id !== selfId).map((x) => x.id);
+  function saveProfile(list, name, on, now = /* @__PURE__ */ new Date()) {
+    const clean = name.trim().slice(0, NAME_MAX2);
+    if (!clean) return null;
+    const same = list.find((p) => p.name.toLowerCase() === clean.toLowerCase());
+    if (!same && list.length >= PROFILE_LIMIT) return null;
+    const profile = { id: same?.id ?? `p-${now.getTime().toString(36)}-${list.length.toString(36)}`, name: clean, ids: [...new Set(on)], savedAt: now.toISOString() };
+    return same ? list.map((p) => p.id === same.id ? profile : p) : [...list, profile];
+  }
+  function planSwitch(wanted, extensions, selfId) {
+    const want = new Set(wanted);
+    const byId = new Map(extensions.map((x) => [x.id, x]));
+    const others = extensions.filter((x) => x.id !== selfId);
+    const off = others.filter((x) => x.enabled && !want.has(x.id));
+    const wantedOff = others.filter((x) => !x.enabled && want.has(x.id));
+    const on = wantedOff.filter(canReenable);
+    const needsApproval = wantedOff.filter((x) => !canReenable(x));
+    const missing = wanted.filter((id) => !byId.has(id) && id !== selfId);
+    return { off, on, needsApproval, missing, fullPage: on.some((x) => x.capabilities.includes(FULL_PAGE_ACCESS)) };
+  }
+  async function applySwitch(plan, deps, acknowledgedFullPage) {
+    const result = { switchedOff: [], switchedOn: [], failed: [] };
+    for (const x of plan.off) {
+      try {
+        await disableExtension(x, deps);
+        result.switchedOff.push(x.name);
+      } catch (e) {
+        result.failed.push({ name: x.name, error: e });
+      }
+    }
+    for (const x of plan.on) {
+      try {
+        await enableExtension(x, deps, acknowledgedFullPage);
+        result.switchedOn.push(x.name);
+      } catch (e) {
+        result.failed.push({ name: x.name, error: e });
+      }
+    }
+    return result;
+  }
+  function parseBisect(raw) {
+    if (!isRecord4(raw) || typeof raw.startedAt !== "string") return null;
+    const found = raw.found === null ? null : typeof raw.found === "string" ? raw.found : void 0;
+    return {
+      startedAt: raw.startedAt,
+      original: ids(raw.original),
+      suspects: ids(raw.suspects),
+      testing: ids(raw.testing),
+      steps: typeof raw.steps === "number" && raw.steps >= 0 ? Math.floor(raw.steps) : 0,
+      acknowledged: raw.acknowledged === true,
+      ...found !== void 0 ? { found } : {}
+    };
+  }
+  var half = (suspects) => suspects.slice(0, Math.floor(suspects.length / 2));
+  function startBisect(on, acknowledged, now = /* @__PURE__ */ new Date()) {
+    if (!on.length) return null;
+    return { startedAt: now.toISOString(), original: [...on], suspects: [...on], testing: half(on), steps: 0, acknowledged };
+  }
+  function answerBisect(b, stillThere) {
+    if (b.found !== void 0) return b;
+    const testing = new Set(b.testing);
+    const suspects = stillThere ? b.suspects.filter((id) => testing.has(id)) : b.suspects.filter((id) => !testing.has(id));
+    const steps = b.steps + 1;
+    if (suspects.length === 0) return { ...b, suspects, testing: [], steps, found: null };
+    if (suspects.length === 1) {
+      if (!stillThere) return { ...b, suspects, testing: [], steps, found: suspects[0] };
+      return { ...b, suspects, testing: [], steps };
+    }
+    return { ...b, suspects, testing: half(suspects), steps };
+  }
+  var bisectWanted = (b) => b.found !== void 0 ? b.original : b.testing;
+
+  // src/catalog-lists.ts
+  var LIST_KIND = "me-fetchy.catalog";
+  var MAX_LISTS = 10;
+  var MAX_ENTRIES2 = 50;
+  var MAX_BYTES = 256 * 1024;
+  var TEXT_MAX = 200;
+  var CatalogListError = class extends Error {
+    constructor(reason) {
+      super(reason);
+      this.reason = reason;
+      this.name = "CatalogListError";
+    }
+    reason;
+  };
+  var text = (v, max = TEXT_MAX) => typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "";
+  function parseCatalogList(raw, url, now = /* @__PURE__ */ new Date()) {
+    if (!raw || typeof raw !== "object" || raw.kind !== LIST_KIND || !Array.isArray(raw.entries)) {
+      throw new CatalogListError("not-a-list");
+    }
+    const r = raw;
+    const entries2 = [];
+    for (const e of r.entries.slice(0, MAX_ENTRIES2)) {
+      if (!e || typeof e !== "object") continue;
+      const x = e;
+      const name = text(x.name, 80), input = text(x.input, 300);
+      if (!name || !input) continue;
+      try {
+        parseSourceUrl(input);
+      } catch {
+        continue;
+      }
+      const en2 = text(x.about?.en), ko2 = text(x.about?.ko);
+      entries2.push({ name, input, about: { en: en2 || ko2, ko: ko2 || en2 } });
+    }
+    return { url, name: text(r.name, 80) || new URL(url).hostname, entries: entries2, fetchedAt: now.toISOString() };
+  }
+  async function fetchCatalogList(url, options, now = /* @__PURE__ */ new Date()) {
+    let parsed;
+    try {
+      parsed = new URL(url.trim());
+    } catch {
+      throw new CatalogListError("not-https");
+    }
+    if (parsed.protocol !== "https:") throw new CatalogListError("not-https");
+    const body2 = await fetchSmallText(parsed.href, { ...options, freshest: true }, MAX_BYTES);
+    if (body2 == null) throw new CatalogListError("not-found");
+    let raw;
+    try {
+      raw = JSON.parse(body2);
+    } catch {
+      throw new CatalogListError("not-a-list");
+    }
+    return parseCatalogList(raw, parsed.href, now);
+  }
+  function parseStoredLists(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const l of raw.slice(0, MAX_LISTS)) {
+      if (!l || typeof l !== "object" || typeof l.url !== "string") continue;
+      try {
+        const list = parseCatalogList({ kind: LIST_KIND, ...l }, l.url);
+        out.push({ ...list, fetchedAt: typeof l.fetchedAt === "string" ? l.fetchedAt : list.fetchedAt });
+      } catch {
+      }
+    }
+    return out;
+  }
+  function withList(lists, list) {
+    if (lists.some((l) => l.url === list.url)) return lists.map((l) => l.url === list.url ? list : l);
+    return lists.length >= MAX_LISTS ? null : [...lists, list];
   }
 
   // src/catalog.ts
@@ -2360,6 +3111,520 @@
     return mode.kind !== "create" && p.tracked && sameRepo(p.tracked.source, p) ? { ...p, input: p.tracked.input, source: p.tracked.source } : p;
   }
 
+  // src/changelog.ts
+  var CHANGELOG_LIMIT = 20;
+  var MAX_ANSWER_BYTES = 512 * 1024;
+  var TITLE_MAX = 120;
+  function where(record) {
+    const s = record.source;
+    if (s.kind !== "github-repo") return null;
+    return { owner: s.owner, repo: s.repo, ref: record.ref ?? s.ref ?? "main", path: normalizePath(s.path) };
+  }
+  function historyUrl(record) {
+    const w = where(record);
+    if (!w) return null;
+    const ref = w.ref.split("/").map(encodeURIComponent).join("/");
+    return `https://github.com/${w.owner}/${w.repo}/commits/${ref}${w.path ? `/${w.path.split("/").map(encodeURIComponent).join("/")}` : ""}`;
+  }
+  var canListChanges = (record) => record.source.kind === "github-repo" && !!record.installedCommit;
+  function commitsApiUrl(record) {
+    const w = where(record);
+    if (!w) return null;
+    const query = new URLSearchParams({ sha: w.ref, per_page: String(CHANGELOG_LIMIT) });
+    if (w.path) query.set("path", w.path);
+    return `https://api.github.com/repos/${encodeURIComponent(w.owner)}/${encodeURIComponent(w.repo)}/commits?${query}`;
+  }
+  function parseCommits(answer, installedCommit) {
+    const commits = [];
+    if (!Array.isArray(answer)) return { commits, complete: false };
+    for (const item of answer) {
+      if (!item || typeof item !== "object") continue;
+      const x = item;
+      if (typeof x.sha !== "string") continue;
+      if (x.sha.toLowerCase() === installedCommit.toLowerCase()) return { commits, complete: true };
+      const message2 = typeof x.commit?.message === "string" ? x.commit.message : "";
+      const first = message2.split("\n", 1)[0]?.trim() ?? "";
+      const date = x.commit?.committer?.date ?? x.commit?.author?.date;
+      const url = typeof x.html_url === "string" && x.html_url.startsWith("https://github.com/") ? x.html_url : "";
+      commits.push({ sha: x.sha, title: first.length > TITLE_MAX ? `${first.slice(0, TITLE_MAX - 1)}…` : first, date: typeof date === "string" ? date : null, url });
+    }
+    return { commits, complete: false };
+  }
+  async function changesSince(record, options) {
+    const url = commitsApiUrl(record);
+    if (!url || !record.installedCommit) throw new FetchError("http", "no commit to count from", url ?? "");
+    const text2 = await fetchSmallText(url, { ...options, freshest: false }, MAX_ANSWER_BYTES);
+    if (text2 == null) throw new FetchError("http", "HTTP 404", url, 404);
+    let answer;
+    try {
+      answer = JSON.parse(text2);
+    } catch (e) {
+      throw new FetchError("bad-json", e instanceof Error ? e.message : String(e), url);
+    }
+    return parseCommits(answer, record.installedCommit);
+  }
+
+  // src/conflicts.ts
+  var ALLOW = [
+    { kind: "global", name: "__dispensa" },
+    { kind: "event", name: "dispensa:ready" }
+  ];
+  var SNIPPET = 120;
+  var ID = "[A-Za-z_$][\\w$]*";
+  var str3 = (group = 1) => `(['"\`])([^'"\`\\n]{1,200})\\${group}`;
+  var STR = str3(1);
+  var ASSIGN = "(?:=(?!=)|\\?\\?=|\\|\\|=)";
+  function lineIndex(text2) {
+    const starts = [0];
+    for (let i = text2.indexOf("\n"); i !== -1; i = text2.indexOf("\n", i + 1)) starts.push(i + 1);
+    return starts;
+  }
+  function locate(text2, starts, at) {
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = lo + hi + 1 >> 1;
+      if (starts[mid] <= at) lo = mid;
+      else hi = mid - 1;
+    }
+    const start = starts[lo];
+    const end = lo + 1 < starts.length ? starts[lo + 1] - 1 : text2.length;
+    const from = end - start <= SNIPPET ? start : Math.max(start, Math.min(at - 40, end - SNIPPET));
+    return { line: lo + 1, text: text2.slice(from, Math.min(end, from + SNIPPET)).trim() };
+  }
+  function scan(text2, re, each) {
+    re.lastIndex = 0;
+    for (let m = re.exec(text2); m; m = re.exec(text2)) {
+      each(m);
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  }
+  var SCOPE = "(?:window|globalThis|self)";
+  var JS_RULES = [
+    { kind: "fetch", role: "define", re: new RegExp(`\\b${SCOPE}\\s*\\.\\s*fetch\\s*=(?!=)`, "g"), name: () => "fetch" },
+    { kind: "global", role: "define", re: new RegExp(`\\b${SCOPE}\\s*\\.\\s*(${ID})\\s*${ASSIGN}`, "g"), name: (m) => m[1] === "fetch" ? null : m[1] ?? null },
+    { kind: "global", role: "define", re: new RegExp(`\\b${SCOPE}\\s*\\[\\s*${STR}\\s*\\]\\s*${ASSIGN}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "global", role: "define", re: new RegExp(`Object\\.defineProperty\\(\\s*${SCOPE}\\s*,\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    // the whole name (no shorter one by backtracking), not followed by an assignment
+    { kind: "global", role: "read", re: new RegExp(`\\b${SCOPE}\\s*\\.\\s*(${ID})(?![\\w$])(?!\\s*${ASSIGN})`, "g"), name: (m) => m[1] ?? null },
+    { kind: "element", role: "define", re: new RegExp(`customElements\\.define\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "element", role: "read", re: new RegExp(`customElements\\.(?:get|whenDefined)\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "id", role: "define", re: new RegExp(`\\.id\\s*=(?!=)\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "id", role: "define", re: new RegExp(`setAttribute\\(\\s*['"]id['"]\\s*,\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "id", role: "read", re: new RegExp(`getElementById\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "id", role: "read", re: /querySelector(?:All)?\(\s*(['"`])#([A-Za-z][\w-]{0,100})\1/g, name: (m) => m[2] ?? null },
+    { kind: "storage-key", role: "define", re: new RegExp(`\\b(local|session)Storage\\.setItem\\(\\s*${str3(2)}`, "g"), name: (m) => `${m[1]}:${m[3]}` },
+    { kind: "storage-key", role: "read", re: new RegExp(`\\b(local|session)Storage\\.getItem\\(\\s*${str3(2)}`, "g"), name: (m) => `${m[1]}:${m[3]}` },
+    { kind: "database", role: "define", re: new RegExp(`indexedDB\\.open\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "symbol", role: "define", re: new RegExp(`Symbol\\.for\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    { kind: "event", role: "define", re: new RegExp(`new\\s+CustomEvent\\(\\s*${STR}`, "g"), name: (m) => m[2] ?? null },
+    // a custom event listened to (a ':' or '-' in its name; built-in events have neither)
+    { kind: "event", role: "read", re: /addEventListener\(\s*(['"`])([\w.]{1,60}[:-][\w:.-]{1,100})\1/g, name: (m) => m[2] ?? null },
+    { kind: "command", role: "define", re: new RegExp(`registerCommand\\(\\s*(?:\\{[^{}]{0,300}?\\bname\\s*:\\s*)?${STR}`, "g"), name: (m) => m[2] ?? null }
+  ];
+  function idProperties(js, add) {
+    scan(js, /\bid\s*:\s*(['"`])([A-Za-z][\w-]{0,100})\1/g, (m) => {
+      const before = js.slice(Math.max(0, m.index - 300), m.index);
+      const made = before.lastIndexOf("createElement");
+      const sameStatement = made !== -1 && !before.slice(made).includes(";");
+      const helper = /\b[\w$.]+\(\s*(['"`])[a-z][a-z0-9-]*\1\s*,\s*\{[^{};]*$/.test(before);
+      if (sameStatement || helper) add(m.index, m[2]);
+    });
+  }
+  var MODIFIERS = ["altKey", "ctrlKey", "metaKey", "shiftKey"];
+  function shortcuts(js, add) {
+    scan(js, /['"`]keydown['"`]/g, (m) => {
+      const body2 = js.slice(m.index, m.index + 700);
+      const mods = MODIFIERS.filter((k) => new RegExp(`(?<![!\\w])(?:\\w+\\.)?${k}\\b(?!\\s*===?\\s*false)`).test(body2)).map((k) => k.replace("Key", ""));
+      const key = /\.key\s*===?\s*(['"`])(.)\1/.exec(body2)?.[2] ?? /\.code\s*===?\s*(['"`])Key([A-Z])\1/.exec(body2)?.[2];
+      if (mods.length && key) add(m.index, `${mods.sort().join("+")}+${key.toUpperCase()}`);
+    });
+  }
+  function cssClaims(css, out) {
+    const starts = lineIndex(css);
+    const text2 = css.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    let depth = 0, selectorStart = 0, bodyStart = -1, selector = "";
+    for (let i = 0; i < text2.length; i++) {
+      const ch = text2[i];
+      if (ch === "{") {
+        if (depth === 0) {
+          selector = text2.slice(selectorStart, i).trim();
+          bodyStart = i + 1;
+        }
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          if (selector && !selector.startsWith("@")) {
+            const selectors = selector.split(",").map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+            let from = bodyStart;
+            while (from < i) {
+              const semi = text2.indexOf(";", from);
+              const end = semi === -1 || semi > i ? i : semi;
+              const decl = text2.slice(from, end);
+              const colon = decl.indexOf(":");
+              if (colon > 0) {
+                const prop = decl.slice(0, colon).trim().toLowerCase();
+                const rest = decl.slice(colon + 1).trimEnd();
+                const mark = /!\s*important$/i.exec(rest.slice(-24));
+                if (mark && /^-{0,2}[a-z][\w-]*$/.test(prop)) {
+                  const value = rest.slice(0, rest.length - mark[0].length).trim();
+                  const where2 = locate(css, starts, from + decl.search(/\S/));
+                  for (const sel of selectors) out.push({ kind: "css", name: `${sel} { ${prop} }`, role: "define", file: "css", line: where2.line, text: where2.text, value });
+                }
+              }
+              from = end + 1;
+            }
+          }
+          selectorStart = i + 1;
+        }
+        if (depth < 0) depth = 0;
+      } else if (ch === ";" && depth === 0) {
+        selectorStart = i + 1;
+      }
+    }
+  }
+  function claimsOf(code) {
+    const out = [];
+    const js = code.js ?? "";
+    if (js) {
+      const starts = lineIndex(js);
+      const push = (kind, role, at, name) => {
+        const where2 = locate(js, starts, at);
+        out.push({ kind, name, role, file: "js", line: where2.line, text: where2.text });
+      };
+      for (const rule of JS_RULES) scan(js, rule.re, (m) => {
+        const name = rule.name(m);
+        if (name) push(rule.kind, rule.role, m.index, name);
+      });
+      idProperties(js, (at, name) => push("id", "define", at, name));
+      shortcuts(js, (at, combo) => push("shortcut", "define", at, combo));
+    }
+    if (code.css) cssClaims(code.css, out);
+    return out;
+  }
+  var COLLIDING = /* @__PURE__ */ new Set(["global", "element", "id", "storage-key", "database", "command", "css"]);
+  var allowed = (kind, name) => ALLOW.some((a) => a.kind === kind && a.name === name);
+  function compare(a, b) {
+    const index = (claims) => {
+      const m = /* @__PURE__ */ new Map();
+      for (const c of claims) {
+        const key = `${c.kind}\0${c.name}`;
+        const e = m.get(key) ?? { values: /* @__PURE__ */ new Set() };
+        if (c.role === "define" && !e.define) e.define = c;
+        if (c.role === "read" && !e.read) e.read = c;
+        if (c.value !== void 0) e.values.add(c.value.toLowerCase());
+        m.set(key, e);
+      }
+      return m;
+    };
+    const left = index(a.claims), right = index(b.claims);
+    const out = [];
+    for (const [key, l] of left) {
+      const r = right.get(key);
+      if (!r) continue;
+      const [kind, name] = key.split("\0");
+      const side3 = (x, c) => ({ extensionId: x.id, name: x.name, claim: c });
+      if (l.define && r.define) {
+        if (kind === "css") {
+          if ([...l.values].every((v) => r.values.has(v)) && [...r.values].every((v) => l.values.has(v))) continue;
+        }
+        const level = COLLIDING.has(kind) && !allowed(kind, name) ? "conflict" : "note";
+        out.push({ kind, name, level, a: side3(a, l.define), b: side3(b, r.define) });
+      } else if (l.define && r.read) {
+        if (kind !== "shortcut" && kind !== "css") out.push({ kind, name, level: "note", a: side3(a, l.define), b: side3(b, r.read) });
+      } else if (l.read && r.define) {
+        if (kind !== "shortcut" && kind !== "css") out.push({ kind, name, level: "note", a: side3(b, r.define), b: side3(a, l.read) });
+      }
+    }
+    return out.sort((x, y) => (x.level === y.level ? 0 : x.level === "conflict" ? -1 : 1) || x.kind.localeCompare(y.kind) || x.name.localeCompare(y.name));
+  }
+  var withClaims = (x) => ({ ...x, claims: claimsOf(x) });
+  function conflictsWith(subject, installed) {
+    const s = withClaims(subject);
+    return installed.flatMap((x) => compare(s, withClaims(x)));
+  }
+  function conflictsAmong(list) {
+    const all = list.map(withClaims);
+    const out = [];
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) out.push(...compare(all[i], all[j]));
+    return out;
+  }
+  function findingsText(findings) {
+    if (!findings.length) return "No overlaps found.";
+    return findings.map((f) => [
+      `${f.level === "conflict" ? "CONFLICT" : "note"} · ${f.kind} · ${f.name}`,
+      `  ${f.a.name} ${f.a.claim.file}:${f.a.claim.line} ${f.a.claim.role} · ${f.a.claim.text}`,
+      `  ${f.b.name} ${f.b.claim.file}:${f.b.claim.line} ${f.b.claim.role} · ${f.b.claim.text}`
+    ].join("\n")).join("\n");
+  }
+  function findingsSummary(findings) {
+    if (!findings.length) return "Conflict check: no overlaps";
+    const lines = ["Conflict check"];
+    for (const level of ["conflict", "note"]) {
+      const byKind = /* @__PURE__ */ new Map();
+      for (const f of findings.filter((x) => x.level === level)) byKind.set(f.kind, [...byKind.get(f.kind) ?? [], `${f.name} (${f.a.name} / ${f.b.name})`]);
+      for (const [kind, names2] of byKind) lines.push(`- ${level} ${kind} ×${names2.length}: ${names2.join(", ")}`);
+    }
+    return lines.join("\n");
+  }
+
+  // src/diagnostics.ts
+  var DIAGNOSTICS_LOG_ENTRIES = 20;
+  function browserOf(userAgent) {
+    const pick = (re, name) => {
+      const m = re.exec(userAgent);
+      return m ? `${name} ${m[1]}` : null;
+    };
+    return pick(/Edg\/([\d.]+)/, "Edge") ?? pick(/OPR\/([\d.]+)/, "Opera") ?? pick(/Firefox\/([\d.]+)/, "Firefox") ?? pick(/Chrome\/([\d.]+)/, "Chrome") ?? pick(/Version\/([\d.]+).*Safari\//, "Safari") ?? "unknown";
+  }
+  function isLocalHost(hostname) {
+    const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return h === "localhost" || h === "::1" || /^127\.\d+\.\d+\.\d+$/.test(h);
+  }
+  function parseHealth(answer) {
+    if (!answer || typeof answer !== "object") return null;
+    const a = answer;
+    const version = typeof a.version === "string" ? a.version : null;
+    const commit = typeof a.commit === "string" ? a.commit : typeof a.build?.commit === "string" ? a.build.commit : null;
+    return version || commit ? { version, commit } : null;
+  }
+  var TOKEN_PATTERNS = [
+    /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+    /\bsk-[A-Za-z0-9_-]{16,}\b/g
+  ];
+  function cleanText(text2, secrets = []) {
+    let out = text2;
+    for (const secret of secrets) if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+    out = out.replace(/(https?:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/g, "$1");
+    for (const re of TOKEN_PATTERNS) out = out.replace(re, "[redacted]");
+    return out.replace(/x-admin-secret\s*[:=]\s*\S+/gi, "x-admin-secret: [redacted]").replace(/(authorization|token|secret|password|api[-_]?key)\s*[:=]\s*\S+/gi, "$1: [redacted]");
+  }
+  var kib = (n) => n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
+  var shortHash = (hash) => hash ? hash.replace(/^sha256:/, "").slice(0, 12) : "-";
+  var yes = (b) => b ? "on" : "off";
+  function extensionLines(x, r, input) {
+    const name = x?.name ?? r?.name ?? "?";
+    const state = !x ? "missing in Marinara" : x.enabled ? "on" : x.approvedHash === x.contentHash ? "off (approved)" : "off (needs approval)";
+    const head = [
+      `- ${name} ${x?.version ?? r?.installedVersion ?? "?"}`,
+      x ? x.runtime : null,
+      x ? `[${x.capabilities.join(", ")}]` : null,
+      state,
+      `hash ${shortHash(x?.contentHash ?? r?.installedHash)}`,
+      x && x.id === input.selfId ? "this is Fetchy" : null
+    ].filter(Boolean).join(" · ");
+    const lines = [head];
+    if (r) {
+      const ref = r.ref && !(r.source.kind === "github-repo" && r.source.ref) ? `@${r.ref}` : "";
+      lines.push(`  source ${describeSource(r.source)}${ref} · automatic updates ${yes(r.autoUpdate)} · auto re-approve ${yes(r.autoApprove)}`);
+      const check2 = r.latest ? `${r.latest.state}${r.latest.version ? ` ${r.latest.version}` : ""} (${r.latest.checkedAt})` : "never";
+      lines.push(`  last check ${check2}${r.lastCheckedAt ? ` · checked ${r.lastCheckedAt}` : ""}`);
+      if (r.lastError) lines.push(`  last error ${r.lastError}`);
+    } else {
+      lines.push("  installed by hand (no source in Fetchy)");
+    }
+    const bytes = x ? input.storageBytes?.get(x.id) : void 0;
+    if (bytes !== void 0) lines.push(`  stored data ${kib(bytes)}`);
+    return lines;
+  }
+  function diagnosticsText(input, secrets = []) {
+    const p = input.policy;
+    const gates = p ? `env ${yes(p.externalExtensionsEnvEnabled)} · switch ${yes(p.externalExtensionsEnabled)} · server sandbox ${p.serverSandboxAvailable ? p.serverSandboxBackend ?? "yes" : `no${p.serverSandboxReason ? ` (${p.serverSandboxReason})` : ""}`}` : `unknown${input.policyError ? ` (${input.policyError})` : ""}`;
+    const lines = [
+      `Fetchy diagnostics · ${input.now.toISOString()}`,
+      `Fetchy ${input.fetchyVersion} · hashing ${input.jsDigest ? "JavaScript SHA-256 (no WebCrypto)" : "WebCrypto"}`,
+      `Marinara ${input.health?.version ?? "unknown"} · commit ${input.health?.commit ?? "unknown"}`,
+      `External Extension gates: ${gates}`,
+      `Browser ${browserOf(input.userAgent)} · UI ${input.uiLanguage}`,
+      `Access ${input.remote ? "remote" : "local"} · admin secret ${input.hasAdminSecret ? "set" : "not set"}`,
+      "",
+      "Extensions"
+    ];
+    const records = new Map(input.records.map((r) => [r.extensionId, r]));
+    if (input.extensions) {
+      for (const x of input.extensions) lines.push(...extensionLines(x, records.get(x.id) ?? null, input));
+      const listed = new Set(input.extensions.map((x) => x.id));
+      for (const r of input.records) if (!listed.has(r.extensionId)) lines.push(...extensionLines(null, r, input));
+      if (!input.extensions.length && !input.records.length) lines.push("- none");
+    } else {
+      lines.push(`- Marinara's list could not be read${input.listError ? `: ${input.listError}` : ""}`);
+      for (const r of input.records) lines.push(...extensionLines(null, r, input));
+    }
+    for (const section of input.extra ?? []) lines.push("", section);
+    const entries2 = input.log.slice(0, DIAGNOSTICS_LOG_ENTRIES).map((e) => ({ ...e, detail: e.detail ? scrub(e.detail) : null }));
+    lines.push("", `Change log (latest ${entries2.length})`, entries2.length ? AuditLog.format(entries2) : "- empty");
+    return cleanText(lines.join("\n"), secrets);
+  }
+
+  // src/storage-view.ts
+  var STORAGE_BACKUP_KIND = "me-fetchy.storage";
+  var FULL_BACKUP_KIND = "me-fetchy.backup";
+  var TOP_KEYS = 5;
+  var utf8Bytes = (text2) => new TextEncoder().encode(text2).byteLength;
+  var storedBytes = (value) => utf8Bytes(JSON.stringify(value));
+  function measure(value) {
+    const top = Object.entries(value).map(([key, v]) => ({ key, bytes: utf8Bytes(JSON.stringify(key)) + 1 + utf8Bytes(JSON.stringify(v) ?? "null") })).sort((a, b) => b.bytes - a.bytes || a.key.localeCompare(b.key)).slice(0, TOP_KEYS);
+    return { bytes: storedBytes(value), top };
+  }
+  var measurable = (x) => x.runtime === "client" && x.enabled && x.approvedHash !== null && x.approvedHash === x.contentHash;
+  async function measureAll(extensions, client, onEach) {
+    const out = /* @__PURE__ */ new Map();
+    for (const x of extensions) {
+      if (x.runtime !== "client") continue;
+      let result;
+      if (!measurable(x)) result = { status: "off" };
+      else {
+        try {
+          result = { status: "ok", ...measure(await client.readStorage(x.id)) };
+        } catch (e) {
+          result = e instanceof EngineApiError && e.code === "not-found" ? { status: "off" } : { status: "failed", error: e };
+        }
+      }
+      out.set(x.id, result);
+      onEach?.(x, result);
+    }
+    return out;
+  }
+  function storageBackup(x, value, now = /* @__PURE__ */ new Date()) {
+    return { kind: STORAGE_BACKUP_KIND, version: 1, extension: { name: x.name, id: x.id, version: x.version }, savedAt: now.toISOString(), value };
+  }
+  function backupFileName(name, now = /* @__PURE__ */ new Date()) {
+    const safe = name.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "") || "extension";
+    return `${safe}-storage-${now.toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+  }
+  var BackupFileError = class extends Error {
+    constructor(reason) {
+      super(reason);
+      this.reason = reason;
+      this.name = "BackupFileError";
+    }
+    reason;
+  };
+  var isPlain = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  function planRestore(text2, target) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text2);
+    } catch {
+      throw new BackupFileError("not-json");
+    }
+    if (!isPlain(parsed)) throw new BackupFileError("not-a-backup");
+    let value;
+    let from = null;
+    if (parsed.kind === STORAGE_BACKUP_KIND) {
+      value = parsed.value;
+      const ext = isPlain(parsed.extension) ? parsed.extension : {};
+      if (typeof ext.name === "string") from = { name: ext.name, version: typeof ext.version === "string" ? ext.version : null };
+    } else if (parsed.kind === FULL_BACKUP_KIND && isPlain(parsed.storage)) {
+      const key = Object.keys(parsed.storage).find((k) => k.trim().toLowerCase() === target.name.trim().toLowerCase());
+      if (!key) throw new BackupFileError("not-in-backup");
+      value = parsed.storage[key];
+      from = { name: key, version: null };
+    } else {
+      throw new BackupFileError("not-a-backup");
+    }
+    if (!isPlain(value)) throw new BackupFileError("not-a-backup");
+    const bytes = storedBytes(value);
+    if (bytes > STORAGE_LIMIT_BYTES) throw new BackupFileError("too-large");
+    const warnings = [];
+    if (from && from.name.trim().toLowerCase() !== target.name.trim().toLowerCase()) warnings.push("other-name");
+    if (from?.version && target.version && from.version !== target.version) warnings.push("other-version");
+    return { value, bytes, from, warnings };
+  }
+  var side2 = (x) => ({ version: x.version, hash: x.contentHash, capabilities: [...x.capabilities] });
+  async function log2(audit, entry) {
+    try {
+      await audit?.record(entry);
+    } catch {
+    }
+  }
+  async function restoreStorage(x, plan, deps) {
+    if (deps.selfId === null || x.id === deps.selfId) throw new EngineApiError("validation", 0, "Fetchy’s own data holds its source list and is not restored here; use Import list");
+    try {
+      await deps.client.clearStorage(x.id);
+      await deps.client.patchStorage(x.id, plan.value);
+      await log2(deps.audit, { action: "storage-restore", result: "ok", extensionId: x.id, name: x.name, source: null, ref: null, from: side2(x), to: side2(x), detail: `${plan.bytes} bytes` });
+    } catch (e) {
+      await log2(deps.audit, { action: "storage-restore", result: "failed", extensionId: x.id, name: x.name, source: null, ref: null, from: side2(x), to: null, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+  async function clearStorage(x, bytes, deps) {
+    if (deps.selfId === null || x.id === deps.selfId) throw new EngineApiError("validation", 0, "Fetchy’s own data holds its source list and is not cleared here");
+    try {
+      await deps.client.clearStorage(x.id);
+      await log2(deps.audit, { action: "storage-clear", result: "ok", extensionId: x.id, name: x.name, source: null, ref: null, from: side2(x), to: null, detail: `${bytes} bytes` });
+    } catch (e) {
+      await log2(deps.audit, { action: "storage-clear", result: "failed", extensionId: x.id, name: x.name, source: null, ref: null, from: side2(x), to: null, detail: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }
+  function groupLocalStorage(entries2) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const [key, value] of entries2) {
+      const name = /^marinara/i.test(key) ? "Marinara" : key.includes(":") ? key.slice(0, key.indexOf(":")) || ":" : (/^[\p{L}\p{N}]+/u.exec(key)?.[0] ?? key) || "?";
+      const group = groups.get(name) ?? { name, keys: 0, bytes: 0 };
+      group.keys++;
+      group.bytes += (key.length + value.length) * 2;
+      groups.set(name, group);
+    }
+    return [...groups.values()].sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name));
+  }
+  async function browserStorage(win = globalThis) {
+    let usage = null, quota = null;
+    try {
+      const estimate = await win.navigator?.storage?.estimate?.();
+      usage = estimate?.usage ?? null;
+      quota = estimate?.quota ?? null;
+    } catch {
+    }
+    const entries2 = [];
+    try {
+      const ls = win.localStorage;
+      for (let i = 0; ls && i < ls.length; i++) {
+        const key = ls.key(i);
+        if (key !== null) entries2.push([key, ls.getItem(key) ?? ""]);
+      }
+    } catch {
+    }
+    let databases = null;
+    try {
+      const list = await win.indexedDB?.databases?.();
+      databases = list ? list.map((d) => d.name ?? "?") : null;
+    } catch {
+    }
+    return { usage, quota, local: groupLocalStorage(entries2), databases };
+  }
+
+  // src/full-backup.ts
+  function fullBackup(records, organize, storage, now = /* @__PURE__ */ new Date()) {
+    return { kind: FULL_BACKUP_KIND, version: 1, savedAt: now.toISOString(), sources: [...records], organize, storage: Object.fromEntries(storage) };
+  }
+  function fullBackupFileName(now = /* @__PURE__ */ new Date()) {
+    return `fetchy-backup-${now.toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+  }
+  function readFullBackup(text2) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text2);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== "object" || parsed.kind !== FULL_BACKUP_KIND) return null;
+    const p = parsed;
+    const storage = p.storage && typeof p.storage === "object" && !Array.isArray(p.storage) ? p.storage : {};
+    return {
+      organize: p.organize ? normalizeOrganize(p.organize) : null,
+      storageNames: Object.keys(storage).filter((k) => storage[k] && typeof storage[k] === "object" && !Array.isArray(storage[k]))
+    };
+  }
+  function mergeOrganize(here, from) {
+    if (!from || here.folders.length || here.tags.length || Object.keys(here.of).length) return here;
+    return from;
+  }
+
   // src/errors.ts
   function describeError(error, t, context = {}) {
     if (error instanceof SourceUrlError) {
@@ -2384,6 +3649,527 @@
       return t(`error.engine.${error.code}`, { message: error.message, status: error.status, name: context.name ?? "" });
     }
     return t("error.unknown", { message: error instanceof Error ? error.message : String(error) });
+  }
+
+  // src/repo-status.ts
+  var REPO_CHECK_EVERY_MS = 7 * 24 * 36e5;
+  var STALE_AFTER_MS = 183 * 24 * 36e5;
+  var MAX_ANSWER_BYTES2 = 256 * 1024;
+  function repoMark(record, now) {
+    if (!record.repo) return null;
+    if (record.repo.archived) return "archived";
+    const pushed = record.repo.pushedAt ? Date.parse(record.repo.pushedAt) : NaN;
+    return Number.isFinite(pushed) && now - pushed > STALE_AFTER_MS ? "stale" : null;
+  }
+  function repoStatusDue(record, now) {
+    if (record.source.kind !== "github-repo") return false;
+    const at = record.repo ? Date.parse(record.repo.checkedAt) : NaN;
+    return !Number.isFinite(at) || at > now || now - at >= REPO_CHECK_EVERY_MS;
+  }
+  function parseRepoStatus(answer, checkedAt) {
+    if (!answer || typeof answer !== "object") return null;
+    const a = answer;
+    if (typeof a.archived !== "boolean") return null;
+    return { archived: a.archived, pushedAt: typeof a.pushed_at === "string" ? a.pushed_at : null, checkedAt };
+  }
+  var repoKey = (r) => r.source.kind === "github-repo" ? `${r.source.owner}/${r.source.repo}`.toLowerCase() : "";
+  async function lookAtRepos(records, options, now = /* @__PURE__ */ new Date()) {
+    const due = records.filter((r) => repoStatusDue(r, now.getTime()));
+    const answers = /* @__PURE__ */ new Map();
+    for (const record of due) {
+      const key = repoKey(record);
+      if (answers.has(key) || record.source.kind !== "github-repo") continue;
+      const url = `https://api.github.com/repos/${encodeURIComponent(record.source.owner)}/${encodeURIComponent(record.source.repo)}`;
+      try {
+        const text2 = await fetchSmallText(url, { ...options, freshest: false }, MAX_ANSWER_BYTES2);
+        const status = text2 == null ? { archived: false, pushedAt: null, checkedAt: now.toISOString() } : parseRepoStatus(JSON.parse(text2), now.toISOString());
+        if (status) answers.set(key, status);
+      } catch {
+        break;
+      }
+    }
+    return due.flatMap((before) => {
+      const repo = answers.get(repoKey(before));
+      return repo ? [{ before, after: { ...before, repo }, fromInstall: true }] : [];
+    });
+  }
+
+  // src/ui/dom.ts
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === void 0 || value === false) continue;
+      if (typeof value === "function") node.addEventListener(key.replace(/^on/, "").toLowerCase(), value);
+      else if (value === true) node.setAttribute(key, "");
+      else node.setAttribute(key, value);
+    }
+    append(node, children);
+    return node;
+  }
+  function append(node, children) {
+    for (const child of children) {
+      if (child === null || child === void 0 || child === false) continue;
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+  }
+  function fragment(...children) {
+    const node = document.createDocumentFragment();
+    append(node, children);
+    return node;
+  }
+  function drow(term, ...detail) {
+    if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
+    return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
+  }
+  function help(text2) {
+    return el("span", { class: "help", tabindex: "0", role: "img", "aria-label": text2, title: text2 }, "?");
+  }
+  function fold(folds, key, summary, ...body2) {
+    const node = el("details", { class: `fold ${key}`, open: folds.has(key) }, el("summary", {}, ...summary), ...body2);
+    node.addEventListener("toggle", () => {
+      if (node.open) folds.add(key);
+      else folds.delete(key);
+    });
+    return node;
+  }
+  var message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
+  var checkedOf = (e) => e.target.checked;
+  var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
+  var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
+  var shortHash2 = (hash) => `${hash.slice(0, 23)}…`;
+  var textSize = (text2) => formatBytes(new TextEncoder().encode(text2).byteLength);
+  function downloadText(filename, text2, type = "application/json") {
+    const url = URL.createObjectURL(new Blob([text2], { type }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3e4);
+  }
+
+  // src/ui/bundle.ts
+  function catalogRow(rows, entry) {
+    if (rows === null) return void 0;
+    const tracked = rows.find((r) => r.extension && r.record && isCatalogSource(entry, r.record.source));
+    if (tracked) return { row: tracked, ours: true };
+    const named = rows.find((r) => r.extension && r.extension.name.trim().toLowerCase() === entry.name.toLowerCase());
+    return named ? { row: named, ours: false } : null;
+  }
+  function catalogUpdates(rows) {
+    return CATALOG.filter((entry) => {
+      const found = catalogRow(rows, entry);
+      const state = found?.ours ? found.row.record?.latest?.state : void 0;
+      return state === "update" || state === "changed";
+    }).length;
+  }
+  function bundleWindow(v) {
+    const { s, t, act } = v;
+    if (!s.bundleOpen) return null;
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.setBundleOpen(false);
+      } },
+      el(
+        "div",
+        { class: "pop catalog", role: "dialog", "aria-modal": "true", "aria-label": t("bundle.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("bundle.title"), help(t("catalog.help"))),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), "data-focus": "bundle-close", onClick: () => act.setBundleOpen(false) }, "✕")
+        ),
+        el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => catalogItem(v, entry))),
+        el("div", { class: "msg loud" }, t("catalog.fullPage")),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "primary", type: "button", disabled: s.busy || !s.catalogPicked.size, onClick: () => void act.onCatalogInstall() }, t("catalog.install", { count: s.catalogPicked.size }))
+        ),
+        message(s.catalogMessage),
+        ...s.catalogResults.map((m) => message(m)),
+        otherLists(v)
+      )
+    );
+    return back;
+  }
+  function otherLists(v) {
+    const { s, t, act, i18n } = v;
+    const box = el("input", { type: "text", class: "list-url", "aria-label": t("lists.add"), placeholder: "https://…/catalog.json", "data-focus": "list-url", autocomplete: "off", spellcheck: "false" });
+    const add = () => {
+      if (box.value.trim()) void act.onAddList(box.value);
+    };
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        add();
+      }
+    });
+    return el(
+      "details",
+      { class: "other-lists", open: s.lists.length > 0 },
+      el("summary", {}, t("lists.heading"), help(t("help.lists"))),
+      ...s.lists.map((list) => el(
+        "div",
+        { class: "other-list", "data-list": list.url },
+        el(
+          "div",
+          { class: "row between" },
+          el("span", {}, el("span", { class: "name" }, list.name), " ", el("span", { class: "muted" }, new URL(list.url).hostname)),
+          el(
+            "div",
+            { class: "row" },
+            el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onRefreshList(list.url) }, t("lists.refresh")),
+            el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onRemoveList(list.url) }, t("organize.delete"))
+          )
+        ),
+        el("ul", { class: "catalog-list" }, ...list.entries.map((entry) => el(
+          "li",
+          {},
+          el(
+            "div",
+            { class: "row between" },
+            el("span", { class: "name" }, entry.name),
+            el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.previewEntry(entry) }, t("lists.preview"))
+          ),
+          el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
+          el("div", { class: "muted" }, entry.input)
+        )))
+      )),
+      el("div", { class: "row", style: "margin-top:8px" }, box, el("button", { class: "small", type: "button", disabled: s.busy, onClick: add }, t("lists.add"))),
+      message(s.listMessage)
+    );
+  }
+  function catalogItem(v, entry) {
+    const { s, t, act, i18n } = v;
+    const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: s.busy, onChange: (e) => act.pickCatalog(entry.name, checkedOf(e)) });
+    box.checked = s.catalogPicked.has(entry.name);
+    const found = catalogRow(s.rows, entry);
+    const ext = found?.row.extension ?? null;
+    const willOff = s.catalogPicked.has(entry.name) && found?.ours && ext?.enabled ? el("div", { class: "line note" }, t(s.keepEnabled ? "catalog.staysOn" : "catalog.willOff")) : null;
+    return el(
+      "li",
+      {},
+      el("label", { class: "toggle" }, box, el("span", { class: "name" }, entry.name)),
+      " ",
+      catalogBadge(v, found),
+      el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
+      willOff
+    );
+  }
+  function catalogBadge({ t }, found) {
+    if (found === void 0) return el("span", { class: "badge" }, t("catalog.unknown"));
+    const ext = found?.row.extension;
+    if (!found || !ext) return el("span", { class: "badge off" }, t("catalog.missing"));
+    const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
+    const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
+    const version = ext.version ?? "";
+    const latest = found.ours ? found.row.record?.latest : void 0;
+    const update = latest && (latest.state === "update" || latest.state === "changed") ? el("span", { class: "badge approve" }, t("catalog.update", { version: latest.version ?? "?" })) : null;
+    return fragment(el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`), update);
+  }
+
+  // src/ui/options.ts
+  function optionsFold(v) {
+    const { s, t, act } = v;
+    return fold(
+      s.folds,
+      "prefs",
+      [t("prefs.heading")],
+      el(
+        "div",
+        { class: "actions" },
+        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: s.autoCheck, onChange: (e) => act.setAutoCheck(checkedOf(e)) }), t("action.autoCheck"), help(t("help.autoCheck"))),
+        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "notify", checked: s.notify, onChange: (e) => act.setNotify(checkedOf(e)) }), t("option.notify"), help(t("help.notify"))),
+        el("label", { class: "toggle" }, el("input", {
+          type: "checkbox",
+          class: "keep-enabled",
+          "data-focus": "keep-enabled",
+          checked: s.keepEnabled,
+          disabled: s.busy,
+          onChange: (e) => {
+            if (!checkedOf(e)) {
+              act.setKeepEnabled(false);
+              return;
+            }
+            act.set({ keepFor: { code: false } });
+          }
+        }), t("option.keepEnabled"), help(t("help.keepEnabled"))),
+        el("button", { class: "small", type: "button", disabled: s.records.length === 0, onClick: () => act.set({ transfer: { kind: "export", text: exportSources(s.records) } }) }, t("action.export")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: { kind: "import", text: "" } }) }, t("action.import")),
+        help(t("help.transfer")),
+        el("button", { class: "small", type: "button", "data-focus": "diagnostics", disabled: s.busy, onClick: act.copyDiagnostics }, t("action.diagnostics")),
+        help(t("help.diagnostics")),
+        el("button", { class: "small", type: "button", "data-focus": "storage-open", onClick: act.openStorage }, t("storage.open")),
+        el("button", { class: "small", type: "button", "data-focus": "backup-open", onClick: () => act.openTools("backup") }, t("backup.title")),
+        // both switch extensions off: not without knowing which one is Fetchy
+        el("button", { class: "small", type: "button", "data-focus": "profiles-open", disabled: !v.host.extensionId, onClick: () => act.openTools("profiles") }, t("profiles.title")),
+        el("button", { class: "small", type: "button", "data-focus": "bisect-open", disabled: !!s.bisect || !v.host.extensionId, onClick: () => act.openTools("bisect") }, t("bisect.title")),
+        el("button", { class: "small", type: "button", "data-focus": "wizard-again", onClick: act.openWizard }, t("wizard.again")),
+        el("span", { class: "muted" }, t("anchor.hint"))
+      ),
+      keepConfirm(v),
+      transferBlock(v),
+      organizeBlock(v),
+      logBlock(v)
+    );
+  }
+  function keepConfirm({ s, t, act, render }) {
+    const keepFor = s.keepFor;
+    if (!keepFor) return null;
+    return el(
+      "div",
+      { class: "msg loud keep-confirm" },
+      el("div", {}, t("keep.confirm.title")),
+      el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
+      el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
+        if (s.keepFor) s.keepFor.code = checkedOf(e);
+        render();
+      } }), t("auto.ack.code")),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => act.setKeepEnabled(true) }, t("auto.confirm.on")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ keepFor: null }) }, t("action.cancel"))
+      )
+    );
+  }
+  function transferBlock({ s, t, act }) {
+    const transfer = s.transfer;
+    if (!transfer) return null;
+    if (transfer.kind === "export") {
+      const area2 = el("textarea", { readonly: true, "aria-label": t("action.export") }, transfer.text);
+      return el(
+        "div",
+        { class: "transfer" },
+        el("p", { class: "note" }, t("result.exported")),
+        area2,
+        el(
+          "div",
+          { class: "row" },
+          el("button", { class: "small", type: "button", onClick: () => {
+            area2.select();
+            act.copy(area2.value);
+          } }, t("action.copy")),
+          el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("close"))
+        )
+      );
+    }
+    const area = el("textarea", { placeholder: '{ "kind": "me-fetchy.sources", … }', "aria-label": t("action.import") }, transfer.text);
+    area.addEventListener("input", () => {
+      if (s.transfer?.kind === "import") s.transfer.text = area.value;
+    });
+    return el(
+      "div",
+      { class: "transfer" },
+      area,
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onImport(area.value) }, t("action.apply")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("action.cancel"))
+      )
+    );
+  }
+  function organizeBlock({ s, t, act }) {
+    const editor = (kind) => {
+      const newLabel = t(kind === "folders" ? "organize.newFolder" : "organize.newTag");
+      const box = el("input", { type: "text", "data-focus": `org-new:${kind}`, placeholder: newLabel, "aria-label": newLabel });
+      const add = () => {
+        if (box.value.trim()) act.reorganize(kind === "folders" ? addFolder(s.organize, box.value) : addTag(s.organize, box.value));
+      };
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          add();
+        }
+      });
+      return el(
+        "div",
+        {},
+        el("div", { class: "muted" }, t(kind === "folders" ? "organize.folders" : "organize.tags")),
+        el(
+          "ul",
+          { class: "org-list" },
+          ...s.organize[kind].map((x) => {
+            const name = el("input", { type: "text", value: x.name, "aria-label": x.name, "data-focus": `org:${x.id}` });
+            name.addEventListener("change", () => act.reorganize(rename(s.organize, kind, x.id, name.value)));
+            return el("li", {}, name, el("button", { class: "small", type: "button", onClick: () => act.reorganize(remove(s.organize, kind, x.id)) }, t("organize.delete")));
+          }),
+          el("li", {}, box, el("button", { class: "small", type: "button", onClick: add }, t("organize.add")))
+        )
+      );
+    };
+    return fold(s.folds, "organize", [t("organize.heading")], editor("folders"), editor("tags"));
+  }
+  function logBlock({ s, t, act }) {
+    const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
+    const empty = s.logEntries.length === 0;
+    return fold(
+      s.folds,
+      "log",
+      [t("log.heading"), help(t("help.log"))],
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small", type: "button", disabled: empty, onClick: () => act.copy(AuditLog.format(s.logEntries)) }, t("log.export")),
+        el("button", { class: "small", type: "button", disabled: empty, onClick: act.clearLog }, t("log.clear"))
+      ),
+      empty ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...s.logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
+    );
+  }
+
+  // src/ui/wizard.ts
+  var WIZARD_STEPS = ["status", "pick", "options", "install", "approve"];
+  function wizardWindow(v) {
+    const { s, t, act } = v;
+    if (!s.wizard) return null;
+    const step = s.wizard.step;
+    const name = WIZARD_STEPS[step] ?? "status";
+    const last = step === WIZARD_STEPS.length - 1;
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.closeWizard();
+      } },
+      el(
+        "div",
+        { class: `pop wizard step-${name}`, role: "dialog", "aria-modal": "true", "aria-label": t("wizard.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("wizard.title"), " ", el("span", { class: "muted" }, t("wizard.stepOf", { step: step + 1, total: WIZARD_STEPS.length, name: t(`wizard.${name}.heading`) }))),
+          el("button", { class: "small", type: "button", "data-focus": "wizard-skip", onClick: act.closeWizard }, t("wizard.skip"))
+        ),
+        body(v, name),
+        el(
+          "div",
+          { class: "actions wizard-nav" },
+          step > 0 ? el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.wizardStep(step - 1) }, t("wizard.back")) : null,
+          last ? el("button", { class: "small primary", type: "button", "data-focus": "wizard-finish", disabled: s.busy, onClick: act.closeWizard }, t("wizard.finish")) : el("button", { class: "small primary", type: "button", "data-focus": "wizard-next", disabled: s.busy, onClick: () => act.wizardStep(step + 1) }, t("wizard.next"))
+        )
+      )
+    );
+    return back;
+  }
+  function body(v, name) {
+    switch (name) {
+      case "status":
+        return statusStep(v);
+      case "pick":
+        return pickStep(v);
+      case "options":
+        return optionsStep(v);
+      case "install":
+        return installStep(v);
+      case "approve":
+        return approveStep(v);
+    }
+  }
+  var check = (ok, text2, fix, optional = false) => {
+    const state = ok === null ? "unknown" : ok ? "ok" : optional ? "info" : "bad";
+    const mark = { unknown: "?", ok: "✓", info: "–", bad: "✗" }[state];
+    return el(
+      "li",
+      { class: state },
+      el("span", { class: "mark", "aria-hidden": "true" }, mark),
+      " ",
+      text2,
+      !ok && fix ? el("div", { class: "note" }, fix) : null
+    );
+  };
+  function statusStep({ s, t }) {
+    const p = s.policy;
+    const admin = s.rowsErrorCode === "privileged" ? false : s.rows ? true : null;
+    return el(
+      "div",
+      {},
+      el("p", { class: "note" }, t("wizard.status.intro")),
+      el(
+        "ul",
+        { class: "wizard-checks" },
+        check(p ? p.externalExtensionsEnvEnabled : null, t("wizard.status.env"), t("gate.env")),
+        check(p ? p.externalExtensionsEnabled : null, t("wizard.status.switch"), t("gate.switch")),
+        check(admin, t("wizard.status.admin"), t("wizard.status.adminFix")),
+        check(p ? p.serverSandboxAvailable : null, t("wizard.status.sandbox"), t("wizard.status.sandboxNote"), true)
+      ),
+      s.policyError ? el("p", { class: "msg warn" }, t("gate.unknown", { error: s.policyError })) : null
+    );
+  }
+  function pickStep(v) {
+    const { t } = v;
+    return el(
+      "div",
+      {},
+      el("p", { class: "note" }, t("wizard.pick.intro")),
+      el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => catalogItem(v, entry))),
+      el("div", { class: "msg loud" }, t("catalog.fullPage"))
+    );
+  }
+  function optionsStep(v) {
+    const { s, t, act } = v;
+    return el(
+      "div",
+      {},
+      el(
+        "div",
+        { class: "wizard-options" },
+        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "wizard-auto-check", checked: s.autoCheck, onChange: (e) => act.setAutoCheck(checkedOf(e)) }), t("action.autoCheck"), help(t("help.autoCheck"))),
+        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "wizard-notify", checked: s.notify, onChange: (e) => act.setNotify(checkedOf(e)) }), t("option.notify"), help(t("help.notify"))),
+        el("label", { class: "toggle" }, el("input", {
+          type: "checkbox",
+          class: "keep-enabled",
+          "data-focus": "wizard-keep",
+          checked: s.keepEnabled,
+          disabled: s.busy,
+          onChange: (e) => {
+            if (!checkedOf(e)) {
+              act.setKeepEnabled(false);
+              return;
+            }
+            act.set({ keepFor: { code: false } });
+          }
+        }), t("option.keepEnabled"), help(t("help.keepEnabled")))
+      ),
+      keepConfirm(v)
+    );
+  }
+  function installStep(v) {
+    const { s, t, act } = v;
+    const count = s.catalogPicked.size;
+    return el(
+      "div",
+      {},
+      count ? el("div", { class: "actions" }, el("button", { class: "primary", type: "button", disabled: s.busy, onClick: () => void act.onCatalogInstall() }, t("catalog.install", { count }))) : el("p", { class: "note" }, t("wizard.install.none")),
+      message(s.catalogMessage),
+      ...s.catalogResults.map((m) => message(m))
+    );
+  }
+  function approveStep({ s, t, act }) {
+    const items = CATALOG.flatMap((entry) => {
+      const ext = catalogRow(s.rows, entry)?.row.extension;
+      if (!ext) return [];
+      const state = ext.enabled ? t("badge.enabled") : ext.approvedHash === null ? t("badge.needsApproval") : t("badge.disabled");
+      return [el(
+        "li",
+        { class: ext.enabled ? "ok" : "wait" },
+        el("span", { class: "name" }, ext.name),
+        " ",
+        el("span", { class: `badge ${ext.enabled ? "on" : "approve"}` }, state),
+        ext.enabled ? null : el("div", { class: "line" }, el("code", { class: "hash" }, ext.contentHash))
+      )];
+    });
+    return el(
+      "div",
+      {},
+      el("p", { class: "note" }, t("wizard.approve.how")),
+      items.length ? el("ul", { class: "catalog-list wizard-approve" }, ...items) : el("p", { class: "muted" }, t("wizard.approve.none")),
+      el("div", { class: "actions" }, el("button", { class: "small", type: "button", disabled: s.busy, onClick: act.onRefresh }, t("wizard.approve.recheck")))
+    );
   }
 
   // src/ui/actions.ts
@@ -2425,9 +4211,11 @@
       try {
         s.rows = await overview(deps);
         s.rowsError = null;
+        s.rowsErrorCode = null;
       } catch (e) {
         s.rows = null;
         s.rowsError = describeError(e, t);
+        s.rowsErrorCode = e instanceof EngineApiError ? e.code : null;
       }
     }
     const afterChange = async () => {
@@ -2553,11 +4341,9 @@
       const due = s.records.filter((r) => CATALOG.some((e) => isCatalogSource(e, r.source)) && stale(r));
       if (!due.length || s.busy) return;
       try {
-        for (const record of due) {
-          const checked = await checkSource(record, deps);
-          s.records = s.records.map((r) => r.id === record.id ? checked : r);
-        }
-        await store.save(s.records);
+        const changes = [];
+        for (const record of due) changes.push({ before: record, after: await checkSource(record, deps), fromInstall: true });
+        s.records = await store.commit(changes);
         await loadRows();
       } catch {
       }
@@ -2582,9 +4368,8 @@
     const onCheckOne = (record) => guard(async () => {
       s.sourcesMessage = null;
       const checked = await checkSource(record, deps);
-      s.records = s.records.map((r) => r.id === record.id ? checked : r);
       try {
-        await store.save(s.records);
+        s.records = await store.commit([{ before: record, after: checked, fromInstall: true }]);
         await loadRows();
       } catch (e) {
         s.sourcesMessage = { kind: "err", text: describeError(e, t) };
@@ -2623,7 +4408,9 @@
       try {
         if (record) {
           const result = await rollbackSource(record, revision.contentHash, deps);
-          s.sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash }) };
+          const text2 = t("result.rolledBack", { name: result.extension.name, hash: result.extension.contentHash });
+          s.sourcesMessage = { kind: "ok", text: result.autoUpdateOff ? `${text2}
+${t("result.rolledBack.autoOff")}` : text2 };
         } else {
           const result = await deps.client.rollback(extension.id, revision.contentHash);
           s.sourcesMessage = { kind: "ok", text: t("result.rolledBack", { name: result.name, hash: result.contentHash }) };
@@ -2638,6 +4425,15 @@
       s.sourcesMessage = { kind: "ok", text: t("result.disabled", { name: extension.name }) };
       await afterChange();
     });
+    const onEnable = (extension, acknowledged) => forSources(extension.name, async () => {
+      s.enableFor = null;
+      try {
+        await enableExtension(extension, deps, acknowledged);
+        s.sourcesMessage = { kind: "ok", text: t("result.enabled", { name: extension.name }) };
+      } finally {
+        await afterChange();
+      }
+    });
     const onDelete = (extension) => guard(async () => {
       s.deleting = null;
       s.sourcesMessage = null;
@@ -2650,6 +4446,7 @@
       }
     });
     const onForget = (record, deleteFromEngine) => forSources(record.name, async () => {
+      s.deleting = null;
       await forgetSource(record, deps, deleteFromEngine);
       s.sourcesMessage = { kind: "ok", text: t(deleteFromEngine ? "result.deleted" : "result.forgotten", { name: record.name }) };
       await afterChange();
@@ -2681,9 +4478,9 @@
       }
       await afterChange();
     });
-    const runAutoUpdates = (check) => guard(async () => {
-      if (!s.records.some((r) => r.autoUpdate)) return;
-      const results = await autoUpdate({ ...deps, approveNow: s.keepEnabled }, { check });
+    const runAutoUpdates = (check2) => guard(async () => {
+      if (!s.records.some((r) => r.autoUpdate) || s.bisect) return;
+      const results = await autoUpdate({ ...deps, approveNow: s.keepEnabled }, { check: check2 });
       await host.storage.patch({ autoUpdatedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
       });
       if (!results.length) {
@@ -2704,10 +4501,10 @@
         r.ignored ? t("result.importIgnored", r) : ""
       ].filter(Boolean).join(" ");
     };
-    const onImport = (text) => guard(async () => {
+    const onImport = (text2) => guard(async () => {
       s.sourcesMessage = null;
       try {
-        const result = await importSources(text, store);
+        const result = await importSources(text2, store);
         s.sourcesMessage = { kind: result.different || result.ignored ? "warn" : "ok", text: importSummary(result) };
         s.transfer = null;
         await afterChange();
@@ -2715,12 +4512,35 @@
         s.sourcesMessage = { kind: "err", text: e instanceof SyntaxError ? t("error.import.invalid") : describeError(e, t) };
       }
     });
-    const copy = (text) => {
-      void navigator.clipboard?.writeText(text).then(() => {
-        s.sourcesMessage = { kind: "ok", text: t("result.copied") };
+    const copy = (text2, done = t("result.copied")) => {
+      const copied = () => {
+        s.copyBox = null;
+        s.sourcesMessage = { kind: "ok", text: done };
         render();
-      }).catch(() => {
-      });
+      };
+      const byHand = () => {
+        s.copyBox = { text: text2 };
+        render();
+      };
+      const legacy = () => {
+        const area = document.createElement("textarea");
+        area.value = text2;
+        area.setAttribute("readonly", "");
+        area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0";
+        core.panel.append(area);
+        area.select();
+        let ok = false;
+        try {
+          ok = typeof document.execCommand === "function" && document.execCommand("copy");
+        } catch {
+          ok = false;
+        }
+        area.remove();
+        if (ok) copied();
+        else byHand();
+      };
+      if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text2).then(copied, legacy);
+      else legacy();
     };
     const clearLog = () => guard(async () => {
       await audit.clear();
@@ -2756,6 +4576,480 @@
       Object.assign(s, patch);
       render();
     };
+    const st = s.storage;
+    const extensionsInList = () => (s.rows ?? []).flatMap((r) => r.extension ? [r.extension] : []);
+    const findExtension = (id) => extensionsInList().find((x) => x.id === id) ?? null;
+    const noteSize = (id, m) => {
+      st.measured.set(id, m);
+      if (m.status === "ok") s.storageBytes.set(id, m.bytes);
+      else s.storageBytes.delete(id);
+    };
+    async function measureStorage() {
+      if (st.measuring) return;
+      st.measuring = true;
+      render();
+      try {
+        if (!s.rows) await loadRows();
+        await measureAll(extensionsInList(), deps.client, (x, m) => {
+          noteSize(x.id, m);
+          render();
+        });
+        st.browser = await browserStorage();
+      } finally {
+        st.measuring = false;
+        render();
+      }
+    }
+    const openStorage = () => {
+      st.open = true;
+      st.message = null;
+      st.restore = null;
+      st.clear = null;
+      render();
+      void measureStorage();
+    };
+    const closeStorage = () => {
+      st.open = false;
+      st.restore = null;
+      st.clear = null;
+      render();
+    };
+    async function saveBackup(x, suffix = "") {
+      const value = await deps.client.readStorage(x.id);
+      const text2 = JSON.stringify(storageBackup(x, value), null, 2);
+      downloadText(backupFileName(`${x.name}${suffix}`), text2);
+      const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+      return { value, bytes };
+    }
+    const onBackup = (x) => guard(async () => {
+      st.message = null;
+      try {
+        await saveBackup(x);
+        st.message = { kind: "ok", text: t("storage.backedUp", { name: x.name }) };
+      } catch (e) {
+        st.message = { kind: "err", text: describeError(e, t, { name: x.name }) };
+      }
+    });
+    const onRestoreFile = (x, text2) => {
+      st.message = null;
+      st.clear = null;
+      try {
+        st.restore = { id: x.id, plan: planRestore(text2, x) };
+      } catch (e) {
+        st.restore = null;
+        st.message = { kind: "err", text: e instanceof BackupFileError ? t(`storage.file.${e.reason}`, { name: x.name }) : describeError(e, t) };
+      }
+      render();
+    };
+    const onRestore = (x) => guard(async () => {
+      const plan = st.restore?.id === x.id ? st.restore.plan : null;
+      if (!plan) return;
+      st.message = null;
+      try {
+        await saveBackup(x, "-before-restore");
+      } catch (e) {
+        st.message = { kind: "err", text: t("storage.restore.noBackup", { error: describeError(e, t, { name: x.name }) }) };
+        return;
+      }
+      try {
+        await restoreStorage(x, plan, { client: deps.client, audit, selfId: host.extensionId });
+        st.restore = null;
+        st.reload = true;
+        st.message = { kind: "ok", text: t("storage.restored", { name: x.name }) };
+      } catch (e) {
+        st.message = { kind: "err", text: t("storage.restore.failed", { name: x.name, error: describeError(e, t, { name: x.name }) }) };
+      }
+      noteSize(x.id, (await measureAll([x], deps.client)).get(x.id) ?? { status: "off" });
+    });
+    const startClear = (x) => {
+      st.message = null;
+      st.restore = null;
+      st.clear = { id: x.id, step: 1, typed: "" };
+      render();
+    };
+    const onClearBackup = (x) => guard(async () => {
+      try {
+        await saveBackup(x, "-before-clear");
+        if (st.clear?.id === x.id) st.clear = { ...st.clear, step: 2 };
+      } catch (e) {
+        st.message = { kind: "err", text: describeError(e, t, { name: x.name }) };
+      }
+    });
+    const onClear = (x) => guard(async () => {
+      if (st.clear?.id !== x.id || st.clear.step !== 2 || st.clear.typed.trim() !== x.name.trim()) return;
+      const before = st.measured.get(x.id);
+      try {
+        await clearStorage(x, before?.status === "ok" ? before.bytes : 0, { client: deps.client, audit, selfId: host.extensionId });
+        st.clear = null;
+        st.reload = true;
+        st.message = { kind: "ok", text: t("storage.cleared", { name: x.name }) };
+      } catch (e) {
+        st.message = { kind: "err", text: describeError(e, t, { name: x.name }) };
+      }
+      noteSize(x.id, (await measureAll([x], deps.client)).get(x.id) ?? { status: "off" });
+    });
+    const cancelStorageQuestion = () => {
+      st.restore = null;
+      st.clear = null;
+      render();
+    };
+    const reloadPage = () => {
+      try {
+        location.reload();
+      } catch {
+      }
+    };
+    const openTools = (which) => {
+      s.tools = which;
+      s.toolsMessage = null;
+      s.toolsReload = false;
+      s.profilePlan = null;
+      s.bisectAck = false;
+      render();
+      void loadRows().then(() => {
+        if (which === "backup") s.backupPicked = new Set(backupCandidates().filter((x) => CATALOG.some((e) => e.name.toLowerCase() === x.name.trim().toLowerCase())).map((x) => x.id));
+        render();
+      });
+    };
+    const backupCandidates = () => extensionsInList().filter((x) => measurable(x) && x.id !== host.extensionId);
+    const pickBackup = (id, on) => {
+      if (on) s.backupPicked.add(id);
+      else s.backupPicked.delete(id);
+      render();
+    };
+    const onFullBackup = () => guard(async () => {
+      s.toolsMessage = null;
+      const data = /* @__PURE__ */ new Map();
+      const failed = [];
+      for (const x of backupCandidates().filter((c) => s.backupPicked.has(c.id))) {
+        try {
+          data.set(x.name, await deps.client.readStorage(x.id));
+        } catch {
+          failed.push(x.name);
+        }
+      }
+      downloadText(fullBackupFileName(), JSON.stringify(fullBackup(await store.load(), s.organize, data), null, 2));
+      s.toolsMessage = { kind: failed.length ? "warn" : "ok", text: [t("backup.saved", { count: data.size }), failed.length ? t("backup.unread", { names: failed.join(", ") }) : ""].filter(Boolean).join("\n") };
+    });
+    const onFullRestore = (text2) => guard(async () => {
+      s.toolsMessage = null;
+      const extra = readFullBackup(text2);
+      if (!extra) {
+        s.toolsMessage = { kind: "err", text: t("backup.notOne") };
+        return;
+      }
+      try {
+        const result = await importSources(text2, store);
+        const organize = mergeOrganize(s.organize, extra.organize);
+        if (organize !== s.organize) reorganize(organize);
+        s.toolsMessage = { kind: "ok", text: [
+          importSummary(result),
+          extra.storageNames.length ? t("backup.dataLater", { names: extra.storageNames.join(", ") }) : ""
+        ].filter(Boolean).join("\n") };
+        await afterChange();
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: e instanceof SyntaxError ? t("backup.notOne") : describeError(e, t) };
+      }
+    });
+    const closeTools = () => {
+      s.tools = null;
+      s.profilePlan = null;
+      render();
+    };
+    const nameOf2 = (id) => s.rows?.find((r) => r.extension?.id === id)?.extension?.name ?? id;
+    const saveProfiles = () => host.storage.patch({ profiles: s.profiles }).catch(() => {
+    });
+    const saveBisect = () => host.storage.patch({ bisect: s.bisect }).catch(() => {
+    });
+    function switchMessage(result, extra = []) {
+      const lines = [
+        result.switchedOff.length ? t("switch.off", { names: result.switchedOff.join(", ") }) : "",
+        result.switchedOn.length ? t("switch.on", { names: result.switchedOn.join(", ") }) : "",
+        ...result.failed.map((f) => t("switch.failed", { name: f.name, error: describeError(f.error, t, { name: f.name }) })),
+        ...extra
+      ].filter(Boolean);
+      s.toolsReload = result.switchedOff.length + result.switchedOn.length > 0;
+      return { kind: result.failed.length ? "warn" : "ok", text: lines.join("\n") || t("switch.nothing") };
+    }
+    const onSaveProfile = (name) => guard(async () => {
+      s.toolsMessage = null;
+      try {
+        const on = switchedOn(await deps.client.list(), host.extensionId);
+        const next = saveProfile(s.profiles, name, on);
+        if (!next) {
+          s.toolsMessage = { kind: "warn", text: t("profiles.full", { count: 20 }) };
+          return;
+        }
+        s.profiles = next;
+        await saveProfiles();
+        s.toolsMessage = { kind: "ok", text: t("profiles.saved", { name: name.trim(), count: on.length }) };
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onDeleteProfile = (id) => {
+      s.profiles = s.profiles.filter((p) => p.id !== id);
+      if (s.profilePlan?.id === id) s.profilePlan = null;
+      void saveProfiles();
+      render();
+    };
+    const onPlanProfile = (id) => guard(async () => {
+      const profile = s.profiles.find((p) => p.id === id);
+      if (!profile) return;
+      s.toolsMessage = null;
+      try {
+        s.profilePlan = { id, plan: planSwitch(profile.ids, await deps.client.list(), host.extensionId), ack: false };
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onApplyProfile = () => guard(async () => {
+      const p = s.profilePlan;
+      if (!p || p.plan.fullPage && !p.ack) return;
+      s.profilePlan = null;
+      try {
+        const result = await applySwitch(p.plan, { client: deps.client, audit }, p.ack);
+        const skipped = [
+          p.plan.needsApproval.length ? t("switch.needsApproval", { names: p.plan.needsApproval.map((x) => x.name).join(", ") }) : "",
+          p.plan.missing.length ? t("switch.missing", { count: p.plan.missing.length }) : ""
+        ];
+        s.toolsMessage = switchMessage(result, skipped);
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+      await loadRows();
+    });
+    async function bisectSwitch(b, extra = []) {
+      const plan = planSwitch(bisectWanted(b), await deps.client.list(), host.extensionId);
+      const result = await applySwitch(plan, { client: deps.client, audit }, b.acknowledged);
+      const skipped = plan.needsApproval.length ? [t("switch.needsApproval", { names: plan.needsApproval.map((x) => x.name).join(", ") })] : [];
+      s.toolsMessage = switchMessage(result, [...skipped, ...extra]);
+      await loadRows();
+    }
+    const onStartBisect = () => guard(async () => {
+      s.toolsMessage = null;
+      try {
+        const list = await deps.client.list();
+        const on = switchedOn(list, host.extensionId);
+        const fullPage = list.some((x) => on.includes(x.id) && x.capabilities.includes("full_page_access"));
+        if (fullPage && !s.bisectAck) return;
+        const b = startBisect(on, s.bisectAck);
+        if (!b) {
+          s.toolsMessage = { kind: "warn", text: t("bisect.none") };
+          return;
+        }
+        await bisectSwitch(b, [t("bisect.reloadThenAnswer")]);
+        s.bisect = b;
+        await saveBisect();
+        s.tools = null;
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onBisectAnswer = (stillThere) => guard(async () => {
+      if (!s.bisect || s.bisect.found !== void 0) return;
+      const next = answerBisect(s.bisect, stillThere);
+      try {
+        if (next.found === void 0) await bisectSwitch(next, [t("bisect.reloadThenAnswer")]);
+        else s.toolsMessage = null;
+        s.bisect = next;
+        await saveBisect();
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const onBisectRestore = (leaveFoundOff) => guard(async () => {
+      const b = s.bisect;
+      if (!b) return;
+      const wanted = leaveFoundOff && b.found ? b.original.filter((id) => id !== b.found) : b.original;
+      try {
+        await bisectSwitch({ ...b, found: b.found ?? null, original: wanted });
+        s.bisect = null;
+        await host.storage.patch({ bisect: null });
+      } catch (e) {
+        s.toolsMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const saveLists = () => host.storage.patch({ catalogs: s.lists }).catch(() => {
+    });
+    const listError = (e) => e instanceof CatalogListError ? t(`lists.error.${e.reason}`, { count: MAX_LISTS }) : describeError(e, t);
+    const onAddList = (url) => guard(async () => {
+      s.listMessage = null;
+      try {
+        const list = await fetchCatalogList(url, { fetch: host.fetch });
+        const next = withList(s.lists, list);
+        if (!next) {
+          s.listMessage = { kind: "warn", text: t("lists.error.too-many", { count: MAX_LISTS }) };
+          return;
+        }
+        s.lists = next;
+        await saveLists();
+        s.listMessage = { kind: "ok", text: t("lists.added", { name: list.name, count: list.entries.length }) };
+      } catch (e) {
+        s.listMessage = { kind: "err", text: listError(e) };
+      }
+    });
+    const onRefreshList = (url) => onAddList(url);
+    const onRemoveList = (url) => {
+      s.lists = s.lists.filter((l) => l.url !== url);
+      void saveLists();
+      render();
+    };
+    const previewEntry = (entry) => {
+      if (s.busy) return;
+      s.bundleOpen = false;
+      s.urlInput = entry.input;
+      void onFetch();
+    };
+    const onPage = (x) => x.runtime === "client" && x.capabilities.includes("full_page_access");
+    const codeOf = (x) => ({ id: x.id, name: x.name, js: x.js, css: x.css });
+    const analyzePreview = (p) => guard(async () => {
+      try {
+        const list = await deps.client.list();
+        const same = (x) => x.id === p.engine?.record.id || x.name.trim().toLowerCase() === p.draft.name.trim().toLowerCase();
+        const installed = list.filter((x) => onPage(x) && !same(x)).map(codeOf);
+        const findings = conflictsWith({ id: "new", name: p.draft.name, js: p.draft.js, css: p.draft.css }, installed);
+        s.conflictsPreview = { hash: p.contentHash, findings, compared: installed.length };
+        s.conflictSummary = findingsSummary(findings);
+      } catch (e) {
+        s.installMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const analyzeSelected = () => guard(async () => {
+      try {
+        const list = await deps.client.list();
+        const picked = list.filter((x) => s.selected.has(x.id));
+        const checked = picked.filter(onPage);
+        const findings = conflictsAmong(checked.map(codeOf));
+        s.conflictsInstalled = { findings, checked: checked.map((x) => ({ id: x.id, name: x.name })), skipped: picked.filter((x) => !onPage(x)).map((x) => x.name) };
+        s.conflictsOpen = true;
+        s.conflictSummary = findingsSummary(findings);
+      } catch (e) {
+        s.sourcesMessage = { kind: "err", text: describeError(e, t) };
+      }
+    });
+    const closeConflicts = () => {
+      s.conflictsOpen = false;
+      render();
+    };
+    const copyFindings = (findings) => copy(findingsText(findings), t("conflicts.copied"));
+    const openWizard = () => {
+      s.wizard = { step: 0 };
+      s.bundleOpen = false;
+      render();
+    };
+    const wizardStep = (step) => {
+      if (!s.wizard) return;
+      s.wizard = { step: Math.max(0, Math.min(WIZARD_STEPS.length - 1, step)) };
+      s.keepFor = null;
+      if (s.wizard.step === WIZARD_STEPS.length - 1) void loadRows().then(render);
+      render();
+    };
+    const closeWizard = () => {
+      s.wizard = null;
+      s.keepFor = null;
+      void host.storage.patch({ wizardDone: true }).catch(() => {
+      });
+      render();
+    };
+    const setNotify = (on) => {
+      s.notify = on;
+      void host.storage.patch({ notifyUpdates: on }).catch(() => {
+      });
+      render();
+    };
+    const openFromToast = () => {
+      s.toast = null;
+      core.open();
+    };
+    const dismissToast = () => {
+      s.toast = null;
+      render();
+    };
+    const addSelfSource = () => {
+      if (s.busy) return;
+      s.urlInput = `${SELF_REPO.owner}/${SELF_REPO.repo}`;
+      void onFetch();
+    };
+    async function lookAtReposQuietly() {
+      try {
+        const changes = await lookAtRepos(s.records, { fetch: host.fetch });
+        if (!changes.length) return;
+        s.records = await store.commit(changes);
+        const byId = new Map(s.records.map((r) => [r.id, r]));
+        s.rows = s.rows?.map((row) => row.record ? { ...row, record: byId.get(row.record.id) ?? row.record } : row) ?? null;
+        render();
+      } catch {
+      }
+    }
+    async function readHealth() {
+      try {
+        const response = await host.fetch("/api/health", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } });
+        return response.ok ? parseHealth(await response.json()) : null;
+      } catch {
+        return null;
+      }
+    }
+    const copyDiagnostics = () => guard(async () => {
+      const [health, log3] = await Promise.all([readHealth(), audit.list().catch(() => [])]);
+      const secret = host.adminSecret();
+      const text2 = diagnosticsText({
+        fetchyVersion: core.version,
+        health,
+        policy: s.policy,
+        policyError: s.policyError,
+        userAgent: typeof navigator === "undefined" ? "" : navigator.userAgent,
+        uiLanguage: core.i18n.lang,
+        remote: typeof location !== "undefined" && !isLocalHost(location.hostname),
+        hasAdminSecret: !!secret,
+        jsDigest: digestBackend() === "javascript",
+        extensions: s.rows ? s.rows.flatMap((r) => r.extension ? [r.extension] : []) : null,
+        listError: s.rowsError,
+        records: s.records,
+        storageBytes: s.storageBytes,
+        log: log3,
+        selfId: host.extensionId,
+        now: /* @__PURE__ */ new Date(),
+        extra: s.conflictSummary ? [s.conflictSummary] : []
+      }, secret ? [secret] : []);
+      copy(text2, t("result.diagnosticsCopied"));
+    });
+    const loadChanges = (record) => {
+      const key = `${record.id}:${record.installedCommit ?? ""}`;
+      const known = s.changes.get(key);
+      if (known && known.status !== "failed") return;
+      s.changes.set(key, { status: "loading" });
+      render();
+      void changesSince(record, { fetch: host.fetch }).then((log3) => {
+        s.changes.set(key, { status: "done", log: log3 });
+      }).catch((e) => {
+        s.changes.set(key, { status: "failed", text: describeError(e, t) });
+      }).finally(render);
+    };
+    const setSelecting = (on) => {
+      s.selecting = on;
+      s.selected = /* @__PURE__ */ new Set();
+      render();
+    };
+    const toggleSelected = (key, on) => {
+      if (on) s.selected.add(key);
+      else s.selected.delete(key);
+      render();
+    };
+    const selectAll = (keys) => {
+      s.selected = keys.every((k) => s.selected.has(k)) ? /* @__PURE__ */ new Set() : new Set(keys);
+      render();
+    };
+    const hideSelected = (hidden) => {
+      if (!s.selected.size) return;
+      reorganize(setHidden(s.organize, [...s.selected], hidden));
+      s.selected = /* @__PURE__ */ new Set();
+      render();
+    };
+    const tagSelected = (tag) => {
+      if (!s.selected.size || !tag) return;
+      reorganize(addTagTo(s.organize, [...s.selected], tag));
+    };
     return {
       loadPolicy,
       loadRecords,
@@ -2781,6 +5075,7 @@
       onRevisions,
       onRollback,
       onDisable,
+      onEnable,
       onDelete,
       onForget,
       onRefresh,
@@ -2793,127 +5088,57 @@
       setAutoCheck,
       reorganize,
       switchLang,
-      set
+      set,
+      setSelecting,
+      toggleSelected,
+      selectAll,
+      hideSelected,
+      tagSelected,
+      onAddList,
+      onRefreshList,
+      onRemoveList,
+      previewEntry,
+      analyzePreview,
+      analyzeSelected,
+      closeConflicts,
+      copyFindings,
+      openWizard,
+      wizardStep,
+      closeWizard,
+      openTools,
+      pickBackup,
+      backupCandidates,
+      onFullBackup,
+      onFullRestore,
+      closeTools,
+      nameOf: nameOf2,
+      onSaveProfile,
+      onDeleteProfile,
+      onPlanProfile,
+      onApplyProfile,
+      onStartBisect,
+      onBisectAnswer,
+      onBisectRestore,
+      openStorage,
+      closeStorage,
+      measureStorage,
+      findExtension,
+      onBackup,
+      onRestoreFile,
+      onRestore,
+      startClear,
+      onClearBackup,
+      onClear,
+      cancelStorageQuestion,
+      reloadPage,
+      setNotify,
+      openFromToast,
+      dismissToast,
+      addSelfSource,
+      loadChanges,
+      lookAtReposQuietly,
+      copyDiagnostics
     };
-  }
-
-  // src/ui/dom.ts
-  function el(tag, attrs = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-      if (value === void 0 || value === false) continue;
-      if (typeof value === "function") node.addEventListener(key.replace(/^on/, "").toLowerCase(), value);
-      else if (value === true) node.setAttribute(key, "");
-      else node.setAttribute(key, value);
-    }
-    append(node, children);
-    return node;
-  }
-  function append(node, children) {
-    for (const child of children) {
-      if (child === null || child === void 0 || child === false) continue;
-      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-    }
-  }
-  function fragment(...children) {
-    const node = document.createDocumentFragment();
-    append(node, children);
-    return node;
-  }
-  function drow(term, ...detail) {
-    if (detail.every((d) => d === null || d === void 0 || d === false)) return null;
-    return el("div", {}, el("dt", {}, term), el("dd", {}, ...detail));
-  }
-  function help(text) {
-    return el("span", { class: "help", tabindex: "0", role: "img", "aria-label": text, title: text }, "?");
-  }
-  function fold(folds, key, summary, ...body) {
-    const node = el("details", { class: `fold ${key}`, open: folds.has(key) }, el("summary", {}, ...summary), ...body);
-    node.addEventListener("toggle", () => {
-      if (node.open) folds.add(key);
-      else folds.delete(key);
-    });
-    return node;
-  }
-  var message = (m) => m ? el("div", { class: `msg ${m.kind}`, role: m.kind === "err" ? "alert" : "status" }, m.text) : null;
-  var checkedOf = (e) => e.target.checked;
-  var formatBytes = (n) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
-  var formatDate = (iso) => iso ? new Date(iso).toLocaleString() : null;
-  var shortHash = (hash) => `${hash.slice(0, 23)}…`;
-  var textSize = (text) => formatBytes(new TextEncoder().encode(text).byteLength);
-
-  // src/ui/bundle.ts
-  function catalogRow(rows, entry) {
-    if (rows === null) return void 0;
-    const tracked = rows.find((r) => r.extension && r.record && isCatalogSource(entry, r.record.source));
-    if (tracked) return { row: tracked, ours: true };
-    const named = rows.find((r) => r.extension && r.extension.name.trim().toLowerCase() === entry.name.toLowerCase());
-    return named ? { row: named, ours: false } : null;
-  }
-  function catalogUpdates(rows) {
-    return CATALOG.filter((entry) => {
-      const found = catalogRow(rows, entry);
-      const state = found?.ours ? found.row.record?.latest?.state : void 0;
-      return state === "update" || state === "changed";
-    }).length;
-  }
-  function bundleWindow(v) {
-    const { s, t, act } = v;
-    if (!s.bundleOpen) return null;
-    const back = el(
-      "div",
-      { class: "pop-back", onClick: (e) => {
-        if (e.target === back) act.setBundleOpen(false);
-      } },
-      el(
-        "div",
-        { class: "pop catalog", role: "dialog", "aria-modal": "true", "aria-label": t("bundle.title") },
-        el(
-          "div",
-          { class: "pop-head" },
-          el("h3", {}, t("bundle.title"), help(t("catalog.help"))),
-          el("button", { class: "small", type: "button", "aria-label": t("close"), "data-focus": "bundle-close", onClick: () => act.setBundleOpen(false) }, "✕")
-        ),
-        el("ul", { class: "catalog-list" }, ...CATALOG.map((entry) => catalogItem(v, entry))),
-        el("div", { class: "msg loud" }, t("catalog.fullPage")),
-        el(
-          "div",
-          { class: "actions" },
-          el("button", { class: "primary", type: "button", disabled: s.busy || !s.catalogPicked.size, onClick: () => void act.onCatalogInstall() }, t("catalog.install", { count: s.catalogPicked.size }))
-        ),
-        message(s.catalogMessage),
-        ...s.catalogResults.map((m) => message(m))
-      )
-    );
-    return back;
-  }
-  function catalogItem(v, entry) {
-    const { s, t, act, i18n } = v;
-    const box = el("input", { type: "checkbox", "data-focus": `catalog:${entry.name}`, disabled: s.busy, onChange: (e) => act.pickCatalog(entry.name, checkedOf(e)) });
-    box.checked = s.catalogPicked.has(entry.name);
-    const found = catalogRow(s.rows, entry);
-    const ext = found?.row.extension ?? null;
-    const willOff = s.catalogPicked.has(entry.name) && found?.ours && ext?.enabled ? el("div", { class: "line note" }, t(s.keepEnabled ? "catalog.staysOn" : "catalog.willOff")) : null;
-    return el(
-      "li",
-      {},
-      el("label", { class: "toggle" }, box, el("span", { class: "name" }, entry.name)),
-      " ",
-      catalogBadge(v, found),
-      el("div", { class: "line note" }, i18n.lang === "ko" ? entry.about.ko : entry.about.en),
-      willOff
-    );
-  }
-  function catalogBadge({ t }, found) {
-    if (found === void 0) return el("span", { class: "badge" }, t("catalog.unknown"));
-    const ext = found?.row.extension;
-    if (!found || !ext) return el("span", { class: "badge off" }, t("catalog.missing"));
-    const state = ext.enabled ? "on" : ext.approvedHash === null ? "approve" : "off";
-    const words = t(ext.enabled ? "badge.enabled" : ext.approvedHash === null ? "badge.needsApproval" : "badge.disabled");
-    const version = ext.version ?? "";
-    const latest = found.ours ? found.row.record?.latest : void 0;
-    const update = latest && (latest.state === "update" || latest.state === "changed") ? el("span", { class: "badge approve" }, t("catalog.update", { version: latest.version ?? "?" })) : null;
-    return fragment(el("span", { class: `badge ${state}` }, `${t(found.ours ? "catalog.installed" : "catalog.installedElsewhere", { version }).replace(/\s+/g, " ").trim()} · ${words}`), update);
   }
 
   // src/ui/context.ts
@@ -2929,8 +5154,11 @@
       records: [],
       rows: null,
       rowsError: null,
+      rowsErrorCode: null,
+      wizard: null,
       codeFor: null,
       deleting: null,
+      enableFor: null,
       autoFor: null,
       expanded: /* @__PURE__ */ new Set(),
       keepEnabled: false,
@@ -2944,9 +5172,32 @@
       urlInput: "",
       transfer: null,
       autoCheck: true,
+      notify: true,
+      peeked: [],
+      toast: null,
+      changes: /* @__PURE__ */ new Map(),
+      storageBytes: /* @__PURE__ */ new Map(),
+      copyBox: null,
+      conflictsPreview: null,
+      conflictsInstalled: null,
+      conflictsOpen: false,
+      conflictSummary: null,
+      tools: null,
+      backupPicked: /* @__PURE__ */ new Set(),
+      profiles: [],
+      profilePlan: null,
+      bisect: null,
+      bisectAck: false,
+      toolsMessage: null,
+      toolsReload: false,
+      storage: { open: false, measuring: false, measured: /* @__PURE__ */ new Map(), browser: null, restore: null, clear: null, message: null, reload: false },
       autoUpdatedAt: 0,
       organize: emptyOrganize(),
       tagFilter: null,
+      selecting: false,
+      selected: /* @__PURE__ */ new Set(),
+      lists: [],
+      listMessage: null,
       bundleOpen: false,
       folds: /* @__PURE__ */ new Set(),
       logEntries: [],
@@ -2955,47 +5206,45 @@
     };
   }
 
-  // src/ui/install.ts
-  function gateLine({ s, t }) {
-    if (s.policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: s.policyError }));
-    if (!s.policy || s.policy.externalExtensionsEnabled) return null;
-    return el("p", { class: "msg warn" }, s.policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
-  }
-  function installSection({ s, t, act }) {
-    return el(
-      "section",
-      { class: "install" },
-      el("h3", {}, t("install.heading"), help(t("help.install"))),
-      s.linking ? el(
-        "div",
-        { class: "msg warn" },
-        t("install.linkHint", { name: s.linking.name }),
-        " ",
-        el("button", { class: "small", type: "button", onClick: act.stopLink }, t("install.cancelLink"))
-      ) : null,
-      el(
-        "form",
-        { class: "row", onSubmit: (e) => {
-          e.preventDefault();
-          void act.onFetch();
-        } },
-        el("input", {
-          type: "text",
-          class: "url",
-          "aria-label": t("install.heading"),
-          placeholder: t("install.placeholder"),
-          value: s.urlInput,
-          disabled: s.busy,
-          autocomplete: "off",
-          spellcheck: "false",
-          onInput: (e) => {
-            s.urlInput = e.target.value;
-          }
-        }),
-        el("button", { class: "primary", type: "submit", disabled: s.busy }, s.busy && !s.prepared && !s.catalogRunning ? t("install.fetching") : t("install.fetch"))
-      ),
-      message(s.installMessage)
-    );
+  // src/ui/changes.ts
+  function changesFold(v, record, where2) {
+    const { s, t, act } = v;
+    const history = historyUrl(record);
+    if (!history) return null;
+    const foldKey = `changes:${where2}:${record.id}`;
+    const link = el("a", { href: history, target: "_blank", rel: "noopener noreferrer" }, t("changes.history"));
+    let body2;
+    if (!canListChanges(record)) {
+      body2 = el("p", { class: "muted line" }, t("changes.noBase"), " ", link);
+    } else {
+      const state = s.changes.get(`${record.id}:${record.installedCommit ?? ""}`);
+      if (!state || state.status === "loading") body2 = el("p", { class: "muted line" }, t("changes.loading"));
+      else if (state.status === "failed") body2 = el("p", { class: "muted line" }, state.text, " ", link);
+      else {
+        const { commits, complete } = state.log;
+        body2 = el(
+          "div",
+          {},
+          commits.length ? el("ul", { class: "commits" }, ...commits.map((c) => el(
+            "li",
+            {},
+            c.url ? el("a", { href: c.url, target: "_blank", rel: "noopener noreferrer" }, c.title || c.sha.slice(0, 7)) : c.title,
+            c.date ? el("span", { class: "muted" }, ` · ${c.date.slice(0, 10)}`) : null
+          ))) : el("p", { class: "muted line" }, t("changes.none")),
+          complete ? null : el("p", { class: "muted line" }, t("changes.more", { count: CHANGELOG_LIMIT }), " ", link)
+        );
+      }
+    }
+    const node = el("details", { class: "changes-fold", open: s.folds.has(foldKey) }, el("summary", {}, t("changes.heading")), body2);
+    node.addEventListener("toggle", () => {
+      if (!node.open) {
+        s.folds.delete(foldKey);
+        return;
+      }
+      s.folds.add(foldKey);
+      if (canListChanges(record)) act.loadChanges(record);
+    });
+    return node;
   }
 
   // src/ui/item-row.ts
@@ -3010,18 +5259,30 @@
       name: extension?.name ?? record?.name ?? "?",
       needsUpdate: latest === "update" || latest === "changed" || latest === "older"
     };
-    const confirm = deleteConfirm(v, row);
+    const confirm = deleteConfirm(v, row) ?? (extension ? enableConfirm(v, extension) : null);
     return el(
       "li",
       { "data-extension": extension?.id ?? "", "data-record": record?.id ?? "" },
-      el("div", { class: "row between" }, rowTitle(v, row), el("div", { class: "row" }, ...primaryActions(v, row))),
+      el("div", { class: "row between" }, el("div", { class: "row title" }, picker(v, row), rowTitle(v, row)), el("div", { class: "row" }, ...primaryActions(v, row))),
       ...rowStatus(v, row),
-      row.open && !confirm ? el("div", { class: "actions" }, ...moreActions(v, row)) : null,
+      record && extension && row.needsUpdate && record.latest?.state !== "older" ? changesFold(v, record, "row") : null,
+      ...row.open && !confirm ? moreActions(v, row) : [],
       confirm,
       record && extension ? autoApproveConfirm(v, record, extension) : null,
       extension ? revisionsBlock(v, extension, record) : null,
       extension ? codeBlock(v, extension) : null
     );
+  }
+  function picker({ s, act }, { key, name }) {
+    if (!s.selecting) return null;
+    return el("input", {
+      type: "checkbox",
+      class: "pick",
+      "aria-label": name,
+      "data-focus": `pick:${key}`,
+      checked: s.selected.has(key),
+      onChange: (e) => act.toggleSelected(key, checkedOf(e))
+    });
   }
   function rowTitle(v, { extension, record, key, name }) {
     const { s, t } = v;
@@ -3037,8 +5298,15 @@
       ...extension ? badges(v, extension) : [el("span", { class: "badge loud" }, t("log.missing"))],
       record?.autoApprove ? el("span", { class: "badge approve" }, t("auto.badge")) : null,
       record?.autoUpdate ? el("span", { class: "badge" }, t("autoUpdate.badge")) : null,
+      record ? repoBadge(v, record) : null,
       ...tagChips
     );
+  }
+  function repoBadge({ t }, record) {
+    const mark = repoMark(record, Date.now());
+    if (!mark || !record.repo) return null;
+    const pushed = record.repo.pushedAt ? formatDate(record.repo.pushedAt) ?? "" : "";
+    return el("span", { class: `badge repo ${mark}`, title: t(mark === "archived" ? "repo.archived.title" : "repo.stale.title", { date: pushed }) }, t(mark === "archived" ? "repo.archived" : "repo.stale"));
   }
   function badges({ t, host }, x) {
     const list = [];
@@ -3074,6 +5342,10 @@
     if (!latest || latest.state === "up-to-date") return null;
     return t(`sources.state.${latest.state}`, { version: latest.version ?? "?" });
   }
+  function sourceLink(record, text2) {
+    if (!record || !text2) return null;
+    return el("a", { class: "source", href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, text2);
+  }
   function hashLine({ t }, extension, record) {
     return el(
       "div",
@@ -3091,10 +5363,11 @@
     const loudState = record?.lastError || needsUpdate ? state : null;
     const loud = loudState ? el("div", { class: "muted line" }, el("span", { class: stateClass }, loudState)) : null;
     if (!open) return [loud];
+    const quietState = loudState ? null : state;
     const needsApproval = !!extension && extension.approvedHash === null && !extension.enabled;
     return [
       loud,
-      source || state ? el("div", { class: "muted line" }, source ?? "", source && state ? " · " : "", state && !loudState ? el("span", { class: stateClass }, state) : null) : null,
+      source || quietState ? el("div", { class: "muted line" }, sourceLink(record, source), source && quietState ? " · " : "", quietState ? el("span", { class: stateClass }, quietState) : null) : null,
       needsApproval ? el("div", { class: "muted line" }, v.t("item.approveHint")) : null,
       organizeControls(v, key),
       hashLine(v, extension, record)
@@ -3119,28 +5392,28 @@
     const tags = organize.tags.map((x) => el("button", { class: `chip${mine?.tags?.includes(x.id) ? " on" : ""}`, type: "button", "aria-pressed": String(!!mine?.tags?.includes(x.id)), "data-focus": `tag:${key}:${x.id}`, onClick: () => act.reorganize(toggleTag(s.organize, key, x.id)) }, `#${x.name}`));
     return el("div", { class: "actions" }, folder, ...tags);
   }
-  function moreActions(v, { extension, record, needsUpdate }) {
+  function moreActions(v, { extension, record, key }) {
     const { s, t, act, host, render } = v;
     const small = (label, onClick) => el("button", { class: "small", type: "button", disabled: s.busy, onClick }, label);
+    const self = !!extension && extension.id === host.extensionId;
     const more = [];
-    if (record && extension) {
-      more.push(small(t("action.check"), () => act.onCheckOne(record)));
-      if (!needsUpdate) more.push(small(t("action.update"), () => act.onUpdate(record)));
-      more.push(el("a", { href: browseUrl(record.source, record.ref), target: "_blank", rel: "noopener noreferrer" }, el("button", { class: "small", type: "button" }, t("action.open"))));
-    }
     if (extension) {
-      const notSelf = extension.id !== host.extensionId;
+      if (extension.enabled && !self) more.push(small(t("action.disable"), () => act.onDisable(extension)));
+      else if (canReenable(extension)) {
+        more.push(small(t("action.enable"), () => isFullPage(extension) ? act.set({ enableFor: { id: extension.id, ack: false } }) : act.onEnable(extension, false)));
+      }
       more.push(small(t("action.code"), () => {
         s.codeFor = s.codeFor === extension.id ? null : extension.id;
         render();
       }));
       more.push(small(t("action.revisions"), () => act.onRevisions(extension)));
-      if (extension.enabled && notSelf) more.push(small(t("action.disable"), () => act.onDisable(extension)));
-      if (notSelf) more.push(small(t("action.delete"), () => act.set({ deleting: extension.id })));
     }
-    if (record) more.push(small(t("action.forget.listOnly"), () => act.onForget(record, false)));
-    if (record && extension) more.push(...autoSwitches(v, record, extension));
-    return more;
+    if (record && extension) more.push(small(t("action.checkNow"), () => act.onCheckOne(record)));
+    if (!self || record) more.push(small(t("action.delete"), () => act.set({ deleting: key })));
+    const switches = record && extension ? autoSwitches(v, record, extension) : [];
+    const out = [el("div", { class: "actions" }, ...more)];
+    if (switches.length) out.push(el("div", { class: "actions auto-group" }, el("span", { class: "muted" }, t("auto.group")), ...switches));
+    return out;
   }
   function autoSwitches({ s, t, act, host, render }, record, extension) {
     const switches = [];
@@ -3171,14 +5444,56 @@
     }), t("auto.label"), help(t("help.autoApprove"))));
     return switches;
   }
-  function deleteConfirm({ s, t, act }, { extension, name }) {
-    if (!extension || s.deleting !== extension.id) return null;
+  function deleteConfirm({ s, t, act, host }, { extension, record, key, name }) {
+    if (s.deleting !== key) return null;
+    const button = (label, onClick, primary = false) => el("button", { class: `small${primary ? " primary" : ""}`, type: "button", disabled: s.busy, onClick }, label);
+    const cancel = button(t("action.cancel"), () => act.set({ deleting: null }));
+    const deletable = extension && extension.id !== host.extensionId ? extension : null;
+    if (deletable && !record) {
+      return el("div", { class: "actions delete-confirm" }, el("span", {}, t("action.confirmDelete", { name })), button(t("action.delete"), () => act.onDelete(deletable), true), cancel);
+    }
+    if (!record) return null;
+    if (!extension) {
+      return el("div", { class: "actions delete-confirm" }, el("span", {}, t("delete.missing", { name })), button(t("delete.fromList"), () => act.onForget(record, false), true), cancel);
+    }
     return el(
       "div",
-      { class: "actions" },
-      el("span", {}, t("action.confirmDelete", { name })),
-      el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onDelete(extension) }, t("action.delete")),
-      el("button", { class: "small", type: "button", onClick: () => act.set({ deleting: null }) }, t("action.cancel"))
+      { class: "delete-confirm" },
+      el("div", { class: "line" }, t("delete.ask", { name })),
+      el(
+        "div",
+        { class: "actions" },
+        deletable ? button(t("delete.engine"), () => act.onDelete(deletable), true) : null,
+        button(t("delete.unlink"), () => act.onForget(record, false)),
+        cancel
+      ),
+      el("p", { class: "note" }, t("delete.unlink.note"))
+    );
+  }
+  var isFullPage = (x) => x.capabilities.includes("full_page_access");
+  function enableConfirm({ s, t, act, render }, extension) {
+    const state = s.enableFor;
+    if (!state || state.id !== extension.id) return null;
+    return el(
+      "div",
+      { class: "msg warn enable-confirm" },
+      el("div", { style: "font-weight:600" }, t("enable.confirm.title", { name: extension.name })),
+      el("p", { class: "line" }, t("enable.confirm.body", { hash: shortHash2(extension.contentHash) })),
+      el(
+        "label",
+        { class: "toggle", style: "white-space:normal;color:inherit" },
+        el("input", { type: "checkbox", class: "ack-full-page", "data-focus": `enable-ack:${extension.id}`, checked: state.ack, onChange: (e) => {
+          state.ack = checkedOf(e);
+          render();
+        } }),
+        t("enable.ack.fullPage")
+      ),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy || !state.ack, onClick: () => act.onEnable(extension, true) }, t("action.enable")),
+        el("button", { class: "small", type: "button", onClick: () => act.set({ enableFor: null }) }, t("action.cancel"))
+      )
     );
   }
   function autoApproveConfirm({ s, t, act, render }, record, extension) {
@@ -3219,7 +5534,7 @@
       list.length === 0 ? el("p", { class: "muted" }, t("revisions.none")) : el("ul", { class: "revisions" }, ...list.map((rev) => el(
         "li",
         {},
-        t("revisions.item", { version: rev.version ?? "?", savedAt: formatDate(rev.savedAt) ?? rev.savedAt, hash: shortHash(rev.contentHash) }),
+        t("revisions.item", { version: rev.version ?? "?", savedAt: formatDate(rev.savedAt) ?? rev.savedAt, hash: shortHash2(rev.contentHash) }),
         " ",
         el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onRollback(extension, record, rev) }, t("action.rollback"))
       ))),
@@ -3237,153 +5552,15 @@
     );
   }
 
-  // src/ui/options.ts
-  function optionsFold(v) {
-    const { s, t, act } = v;
-    return fold(
-      s.folds,
-      "prefs",
-      [t("prefs.heading")],
-      el(
-        "div",
-        { class: "actions" },
-        el("label", { class: "toggle" }, el("input", { type: "checkbox", "data-focus": "auto-check", checked: s.autoCheck, onChange: (e) => act.setAutoCheck(checkedOf(e)) }), t("action.autoCheck"), help(t("help.autoCheck"))),
-        el("label", { class: "toggle" }, el("input", {
-          type: "checkbox",
-          class: "keep-enabled",
-          "data-focus": "keep-enabled",
-          checked: s.keepEnabled,
-          disabled: s.busy,
-          onChange: (e) => {
-            if (!checkedOf(e)) {
-              act.setKeepEnabled(false);
-              return;
-            }
-            act.set({ keepFor: { code: false } });
-          }
-        }), t("option.keepEnabled"), help(t("help.keepEnabled"))),
-        el("button", { class: "small", type: "button", disabled: s.records.length === 0, onClick: () => act.set({ transfer: { kind: "export", text: exportSources(s.records) } }) }, t("action.export")),
-        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: { kind: "import", text: "" } }) }, t("action.import")),
-        help(t("help.transfer")),
-        el("span", { class: "muted" }, t("anchor.hint"))
-      ),
-      keepConfirm(v),
-      transferBlock(v),
-      organizeBlock(v),
-      logBlock(v)
-    );
-  }
-  function keepConfirm({ s, t, act, render }) {
-    const keepFor = s.keepFor;
-    if (!keepFor) return null;
-    return el(
-      "div",
-      { class: "msg loud keep-confirm" },
-      el("div", {}, t("keep.confirm.title")),
-      el("p", { class: "line", style: "font-weight:400" }, t("keep.confirm.body")),
-      el("label", { class: "toggle", style: "white-space:normal;color:inherit" }, el("input", { type: "checkbox", class: "ack-code", onChange: (e) => {
-        if (s.keepFor) s.keepFor.code = checkedOf(e);
-        render();
-      } }), t("auto.ack.code")),
-      el(
-        "div",
-        { class: "actions" },
-        el("button", { class: "small primary", type: "button", disabled: !keepFor.code, onClick: () => act.setKeepEnabled(true) }, t("auto.confirm.on")),
-        el("button", { class: "small", type: "button", onClick: () => act.set({ keepFor: null }) }, t("action.cancel"))
-      )
-    );
-  }
-  function transferBlock({ s, t, act }) {
-    const transfer = s.transfer;
-    if (!transfer) return null;
-    if (transfer.kind === "export") {
-      const area2 = el("textarea", { readonly: true, "aria-label": t("action.export") }, transfer.text);
-      return el(
-        "div",
-        { class: "transfer" },
-        el("p", { class: "note" }, t("result.exported")),
-        area2,
-        el(
-          "div",
-          { class: "row" },
-          el("button", { class: "small", type: "button", onClick: () => {
-            area2.select();
-            act.copy(area2.value);
-          } }, t("action.copy")),
-          el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("close"))
-        )
-      );
-    }
-    const area = el("textarea", { placeholder: '{ "kind": "me-fetchy.sources", … }', "aria-label": t("action.import") }, transfer.text);
-    area.addEventListener("input", () => {
-      if (s.transfer?.kind === "import") s.transfer.text = area.value;
-    });
-    return el(
-      "div",
-      { class: "transfer" },
-      area,
-      el(
-        "div",
-        { class: "row" },
-        el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onImport(area.value) }, t("action.apply")),
-        el("button", { class: "small", type: "button", onClick: () => act.set({ transfer: null }) }, t("action.cancel"))
-      )
-    );
-  }
-  function organizeBlock({ s, t, act }) {
-    const editor = (kind) => {
-      const newLabel = t(kind === "folders" ? "organize.newFolder" : "organize.newTag");
-      const box = el("input", { type: "text", "data-focus": `org-new:${kind}`, placeholder: newLabel, "aria-label": newLabel });
-      const add = () => {
-        if (box.value.trim()) act.reorganize(kind === "folders" ? addFolder(s.organize, box.value) : addTag(s.organize, box.value));
-      };
-      box.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          add();
-        }
-      });
-      return el(
-        "div",
-        {},
-        el("div", { class: "muted" }, t(kind === "folders" ? "organize.folders" : "organize.tags")),
-        el(
-          "ul",
-          { class: "org-list" },
-          ...s.organize[kind].map((x) => {
-            const name = el("input", { type: "text", value: x.name, "aria-label": x.name, "data-focus": `org:${x.id}` });
-            name.addEventListener("change", () => act.reorganize(rename(s.organize, kind, x.id, name.value)));
-            return el("li", {}, name, el("button", { class: "small", type: "button", onClick: () => act.reorganize(remove(s.organize, kind, x.id)) }, t("organize.delete")));
-          }),
-          el("li", {}, box, el("button", { class: "small", type: "button", onClick: add }, t("organize.add")))
-        )
-      );
-    };
-    return fold(s.folds, "organize", [t("organize.heading")], editor("folders"), editor("tags"));
-  }
-  function logBlock({ s, t, act }) {
-    const fmt = (e) => `${new Date(e.at).toLocaleString()} · ${e.action} · ${e.result} · ${e.name}` + (e.from || e.to ? ` · v${e.from?.version ?? "-"} → v${e.to?.version ?? "-"}` : "") + (e.detail ? ` · ${e.detail}` : "");
-    const empty = s.logEntries.length === 0;
-    return fold(
-      s.folds,
-      "log",
-      [t("log.heading"), help(t("help.log"))],
-      el(
-        "div",
-        { class: "actions" },
-        el("button", { class: "small", type: "button", disabled: empty, onClick: () => act.copy(AuditLog.format(s.logEntries)) }, t("log.export")),
-        el("button", { class: "small", type: "button", disabled: empty, onClick: act.clearLog }, t("log.clear"))
-      ),
-      empty ? el("p", { class: "muted" }, t("log.empty")) : el("ul", { class: "log" }, ...s.logEntries.map((e) => el("li", { class: e.result }, fmt(e))))
-    );
-  }
-
   // src/ui/items.ts
   var keyOf = (r) => r.extension?.id ?? `record:${r.record?.id ?? ""}`;
   function itemsSection(v) {
     const { s, t } = v;
     const list = s.rows ?? s.records.map((record) => ({ extension: null, record }));
-    const shown = list.filter((r) => !s.tagFilter || s.organize.of[keyOf(r)]?.tags?.includes(s.tagFilter)).sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
+    const filtered = list.filter((r) => !s.tagFilter || s.organize.of[keyOf(r)]?.tags?.includes(s.tagFilter)).sort((a, b) => (a.extension?.name ?? a.record?.name ?? "").localeCompare(b.extension?.name ?? b.record?.name ?? ""));
+    const shown = filtered.filter((r) => !isHidden(s.organize, keyOf(r)));
+    const hidden = filtered.filter((r) => isHidden(s.organize, keyOf(r)));
+    const inSight = () => [...shown, ...s.folds.has("hidden") ? hidden : []].map(keyOf);
     return el(
       "section",
       { class: "items" },
@@ -3393,12 +5570,15 @@
         el("h3", {}, t("items.heading"), help(t("help.items"))),
         toolbar(v)
       ),
+      selectBar(v, inSight),
       tagFilterChips(v),
       s.rowsError ? el("p", { class: "msg warn" }, t("items.unavailable", { error: s.rowsError })) : null,
       list.length === 0 ? el("p", { class: "muted" }, t("items.empty")) : null,
       ...grouped(v, shown),
+      hiddenFold(v, hidden),
       message(s.reconcileMessage),
       message(s.sourcesMessage),
+      s.sourcesMessage?.kind === "err" ? diagnosticsButton(v) : null,
       optionsFold(v)
     );
   }
@@ -3407,10 +5587,55 @@
     return el(
       "div",
       { class: "row" },
+      el("button", {
+        class: `small${s.selecting ? " on" : ""}`,
+        type: "button",
+        "data-focus": "select",
+        "aria-pressed": String(s.selecting),
+        onClick: () => act.setSelecting(!s.selecting)
+      }, s.selecting ? t("select.done") : t("select.start")),
       el("button", { class: "small", type: "button", disabled: s.busy || s.records.length === 0, onClick: act.onCheckAll }, t("action.checkAll")),
       el("button", { class: "small primary", type: "button", disabled: s.busy || !anyUpdate, onClick: act.onUpdateAll }, t("action.updateAll")),
       el("button", { class: "small", type: "button", disabled: s.busy, title: t("action.refresh"), "aria-label": t("action.refresh"), onClick: act.onRefresh }, "↻")
     );
+  }
+  function selectBar({ s, t, act }, inSight) {
+    if (!s.selecting) return null;
+    const picked = [...s.selected];
+    const anyHidden = picked.some((k) => isHidden(s.organize, k));
+    const anyShown = picked.some((k) => !isHidden(s.organize, k));
+    const tagBox = s.organize.tags.length ? el(
+      "select",
+      { "aria-label": t("select.tag"), disabled: !picked.length, onChange: (e) => act.tagSelected(e.target.value) },
+      el("option", { value: "", selected: true }, t("select.tag")),
+      ...s.organize.tags.map((x) => el("option", { value: x.id }, `#${x.name}`))
+    ) : null;
+    return el(
+      "div",
+      { class: "selectbar", role: "toolbar", "aria-label": t("select.start") },
+      el("span", { class: "muted" }, t("select.count", { count: picked.length })),
+      el("button", { class: "small", type: "button", disabled: !s.rows?.length && !s.records.length, onClick: () => act.selectAll(inSight()) }, t("select.all")),
+      el("button", { class: "small", type: "button", disabled: !anyShown, onClick: () => act.hideSelected(true) }, t("select.hide")),
+      el("button", { class: "small", type: "button", disabled: !anyHidden, onClick: () => act.hideSelected(false) }, t("select.show")),
+      tagBox,
+      el("button", { class: "small", type: "button", "data-focus": "conflicts-selected", disabled: picked.length < 2 || s.busy, onClick: act.analyzeSelected }, t("conflicts.installed"))
+    );
+  }
+  function hiddenFold(v, hidden) {
+    const { s, t } = v;
+    if (!hidden.length) return null;
+    const updates = hidden.filter((r) => r.record && r.extension && hasUpdate(r.record)).length;
+    const box = fold(
+      s.folds,
+      "hidden",
+      [t("hidden.heading", { count: hidden.length }), updates ? el("span", { class: "state update" }, " · ", t("hidden.updates", { count: updates })) : null],
+      el("ul", { class: "items" }, ...hidden.map((r) => itemRow(v, r.extension, r.record)))
+    );
+    box.classList.add("folder");
+    return box;
+  }
+  function diagnosticsButton({ s, t, act }) {
+    return el("div", { class: "actions" }, el("button", { class: "small", type: "button", disabled: s.busy, onClick: act.copyDiagnostics }, t("action.diagnostics")));
   }
   function tagFilterChips({ s, t, act }) {
     if (!s.organize.tags.length) return null;
@@ -3443,6 +5668,145 @@
     return groups;
   }
 
+  // src/ui/install.ts
+  function gateLine({ s, t }) {
+    if (s.policyError) return el("p", { class: "msg warn" }, t("gate.unknown", { error: s.policyError }));
+    if (!s.policy || s.policy.externalExtensionsEnabled) return null;
+    return el("p", { class: "msg warn" }, s.policy.externalExtensionsEnvEnabled ? t("gate.switch") : t("gate.env"));
+  }
+  function installSection(v) {
+    const { s, t, act } = v;
+    return el(
+      "section",
+      { class: "install" },
+      el("h3", {}, t("install.heading"), help(t("help.install"))),
+      s.linking ? el(
+        "div",
+        { class: "msg warn" },
+        t("install.linkHint", { name: s.linking.name }),
+        " ",
+        el("button", { class: "small", type: "button", onClick: act.stopLink }, t("install.cancelLink"))
+      ) : null,
+      el(
+        "form",
+        { class: "row", onSubmit: (e) => {
+          e.preventDefault();
+          void act.onFetch();
+        } },
+        el("input", {
+          type: "text",
+          class: "url",
+          "aria-label": t("install.heading"),
+          placeholder: t("install.placeholder"),
+          value: s.urlInput,
+          disabled: s.busy,
+          autocomplete: "off",
+          spellcheck: "false",
+          onInput: (e) => {
+            s.urlInput = e.target.value;
+          }
+        }),
+        el("button", { class: "primary", type: "submit", disabled: s.busy }, s.busy && !s.prepared && !s.catalogRunning ? t("install.fetching") : t("install.fetch"))
+      ),
+      message(s.installMessage),
+      s.installMessage?.kind === "err" ? diagnosticsButton(v) : null
+    );
+  }
+
+  // src/ui/conflicts.ts
+  var kindLabel = (t, kind) => t(`conflicts.kind.${kind}`);
+  function findingItem({ t }, f, me) {
+    const other = me === null ? `${f.a.name} / ${f.b.name}` : f.a.extensionId === me ? f.b.name : f.a.name;
+    const line = (side3) => el(
+      "div",
+      { class: "line" },
+      el("span", { class: "muted" }, `${side3.name} · ${side3.claim.file}:${side3.claim.line} · ${t(side3.claim.role === "define" ? "conflicts.defines" : "conflicts.reads")}`),
+      el("pre", { class: "finding-code" }, side3.claim.text)
+    );
+    return el(
+      "li",
+      { class: `finding ${f.level}` },
+      el(
+        "details",
+        {},
+        el(
+          "summary",
+          {},
+          el("span", { class: `badge ${f.level === "conflict" ? "loud" : ""}` }, t(f.level === "conflict" ? "conflicts.conflict" : "conflicts.note")),
+          " ",
+          kindLabel(t, f.kind),
+          " ",
+          el("code", {}, f.name),
+          el("span", { class: "muted" }, ` · ${other}`)
+        ),
+        line(f.a),
+        line(f.b)
+      )
+    );
+  }
+  function findingsList(v, findings, me) {
+    return el("ul", { class: "findings" }, ...findings.map((f) => findingItem(v, f, me)));
+  }
+  function previewConflicts(v, p) {
+    const { s, t, act } = v;
+    if (p.draft.runtime !== "client" || !p.fullPageAccess) return el("p", { class: "note" }, t("conflicts.sandboxed"));
+    const result = s.conflictsPreview?.hash === p.contentHash ? s.conflictsPreview : null;
+    const conflicts = result?.findings.filter((f) => f.level === "conflict").length ?? 0;
+    return el(
+      "div",
+      { class: "conflicts-preview" },
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.analyzePreview(p) }, t("conflicts.preview")),
+        help(t("help.conflicts"))
+      ),
+      result ? el(
+        "div",
+        { class: "line" },
+        el("div", { class: conflicts ? "msg err" : "msg ok" }, result.findings.length ? t("conflicts.previewFound", { conflicts, notes: result.findings.length - conflicts, count: result.compared }) : t("conflicts.previewNone", { count: result.compared })),
+        result.findings.length ? findingsList(v, result.findings, "new") : null,
+        result.findings.length ? el("div", { class: "actions" }, el("button", { class: "small", type: "button", onClick: () => act.copyFindings(result.findings) }, t("conflicts.copy"))) : null
+      ) : null
+    );
+  }
+  function conflictsWindow(v) {
+    const { s, t, act } = v;
+    const r = s.conflictsInstalled;
+    if (!r || !s.conflictsOpen) return null;
+    const groups = r.checked.map((x) => ({ x, mine: r.findings.filter((f) => f.a.extensionId === x.id || f.b.extensionId === x.id) }));
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.closeConflicts();
+      } },
+      el(
+        "div",
+        { class: "pop conflicts", role: "dialog", "aria-modal": "true", "aria-label": t("conflicts.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("conflicts.title"), help(t("help.conflicts"))),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: act.closeConflicts }, "✕")
+        ),
+        el("p", { class: "note" }, t("conflicts.checked", { names: r.checked.map((x) => x.name).join(", ") })),
+        r.skipped.length ? el("p", { class: "note" }, t("conflicts.skipped", { names: r.skipped.join(", ") })) : null,
+        message({ kind: r.findings.some((f) => f.level === "conflict") ? "err" : "ok", text: r.findings.length ? t("conflicts.installedFound", { conflicts: r.findings.filter((f) => f.level === "conflict").length, notes: r.findings.filter((f) => f.level === "note").length }) : t("conflicts.installedNone") }),
+        ...groups.filter((g) => g.mine.length).map((g) => {
+          const c = g.mine.filter((f) => f.level === "conflict").length;
+          return el(
+            "details",
+            { class: "conflict-group", open: c > 0 },
+            el("summary", {}, el("span", { class: "name" }, g.x.name), el("span", { class: "muted" }, ` · ${t("conflicts.counts", { conflicts: c, notes: g.mine.length - c })}`)),
+            findingsList(v, g.mine, g.x.id)
+          );
+        }),
+        r.findings.length ? el("div", { class: "actions" }, el("button", { class: "small", type: "button", onClick: () => act.copyFindings(r.findings) }, t("conflicts.copy"))) : null
+      )
+    );
+    return back;
+  }
+
   // src/ui/preview.ts
   function previewSection(v, p) {
     const { s, t } = v;
@@ -3461,9 +5825,12 @@
         drow(t("preview.description"), d.description || t("preview.none")),
         drow(t("preview.capabilities"), d.capabilities.length ? d.capabilities.join(", ") : t("preview.capabilities.none")),
         drow(t("preview.hash"), el("code", { class: "hash" }, p.contentHash), el("div", { class: "muted" }, t("preview.hash.hint"))),
-        view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash(view.record.contentHash) })) : null,
+        view ? drow(t("preview.engine"), t("preview.engine.record", { name: view.record.name, version: view.record.version ?? "?", state: t(view.record.enabled ? "preview.engine.enabled" : "preview.engine.disabled"), hash: shortHash2(view.record.contentHash) })) : null,
         view ? drow(t("preview.changes"), changesBlock(v, p)) : null
       ),
+      // an update of what Fetchy installed: the commits since
+      p.tracked && view && !view.sameCode && p.tracked.extensionId === view.record.id ? changesFold(v, p.tracked, "preview") : null,
+      el("dl", { class: "conflicts-row" }, drow(t("conflicts.heading"), previewConflicts(v, p))),
       // where it comes from, what is in it and how big: there when wanted
       packageDetails(v, p),
       codeDetails(v, p),
@@ -3477,7 +5844,7 @@
     else if (p.engineListError) warnings.push(el("p", { class: "note" }, v.t("preview.engine.unavailable", { error: describeError(p.engineListError, v.t) })));
     return warnings;
   }
-  var warn = (text) => el("div", { class: "msg warn" }, text);
+  var warn = (text2) => el("div", { class: "msg warn" }, text2);
   function packageWarnings({ s, t }, p) {
     const warnings = [];
     if (p.fullPageAccess) warnings.push(el("div", { class: "msg loud", role: "alert" }, t("warn.fullPage")));
@@ -3511,7 +5878,7 @@
     const view = p.engine;
     if (!view) return null;
     if (view.sameCode) return el("div", { class: "msg ok" }, t("preview.changes.none"));
-    const sideText = (side2, other) => side2 ? formatBytes(side2.bytes) : t(`preview.changes.${other}`);
+    const sideText = (side3, other) => side3 ? formatBytes(side3.bytes) : t(`preview.changes.${other}`);
     return el("ul", { class: "changes" }, ...view.changes.map((c) => el(
       "li",
       {},
@@ -3683,8 +6050,439 @@ details.folder > summary .muted { font-weight: 400; margin-left: 6px; }
 .org-list li { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .org-list li input { flex: 1 1 auto; }
 select { font: inherit; font-size: 12px; color: var(--fg); background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+/* choosing several rows: the bar above the list and a checkbox before each name */
+.selectbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; margin: 4px 0 8px; border-radius: 10px; background: var(--wash-info); }
+button.small.on { color: var(--fg); border-color: var(--accent); }
+.row.title { gap: 0; flex-wrap: nowrap; align-items: flex-start; }
+input.pick { margin: 3px 8px 0 0; accent-color: var(--accent); flex: 0 0 auto; }
+.auto-group { padding-top: 6px; border-top: 1px dashed var(--line); }
+.delete-confirm { margin-top: 8px; }
+/* the update notice: a small card at the bottom right (full width on a narrow screen) */
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 2147483003; width: min(360px, calc(100vw - 32px)); background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.toast .actions { margin-top: 8px; }
+@media (max-width: 640px) { .toast { left: 12px; right: 12px; bottom: 12px; width: auto; } }
+.self-update { margin-top: 10px; }
+details.changes-fold { margin-top: 6px; }
+ul.commits { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+ul.commits li { margin-top: 2px; }
+.badge.repo.archived { background: var(--wash-warn); color: var(--fg); }
+.badge.repo { cursor: help; }
+/* the first-time setup guide */
+ul.wizard-checks { list-style: none; margin: 8px 0 0; padding: 0; }
+ul.wizard-checks li { padding: 6px 0; border-top: 1px solid var(--line); }
+ul.wizard-checks li:first-child { border-top: 0; }
+ul.wizard-checks .mark { display: inline-block; width: 1.2em; font-weight: 700; }
+ul.wizard-checks li.ok .mark { color: var(--accent); } ul.wizard-checks li.bad { color: var(--fg); } ul.wizard-checks li.bad .mark { color: #d9534f; }
+.wizard-options { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.wizard-options label.toggle { white-space: normal; }
+.wizard-nav { justify-content: flex-end; margin-top: 14px; }
+.pop.wizard code.hash { font-size: 11px; }
+/* the storage window */
+ul.storage-list { list-style: none; margin: 8px 0 0; padding: 0; }
+ul.storage-list > li { padding: 10px 0; border-top: 1px solid var(--line); }
+ul.storage-list > li:first-child { border-top: 0; }
+.meter { height: 6px; border-radius: 999px; background: var(--soft); overflow: hidden; margin: 6px 0 2px; }
+.meter > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.meter.high > span { background: #d9534f; }
+details.top-keys ul, ul.local-groups { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+.clear-confirm input.clear-name { margin-top: 6px; }
+details.browser-storage { margin-top: 14px; }
+.bisect-bar { margin-top: 10px; }
+.profile-plan { margin-top: 6px; }
+/* the conflict check */
+ul.findings { list-style: none; margin: 6px 0 0; padding: 0; }
+ul.findings li { border-top: 1px solid var(--line); padding: 4px 0; }
+ul.findings li:first-child { border-top: 0; }
+ul.findings details { margin: 0; } ul.findings summary { color: var(--fg); }
+ul.findings li.note summary { color: var(--muted); }
+pre.finding-code { max-height: 80px; margin-top: 2px; }
+details.conflict-group > summary { color: var(--fg); padding: 6px 0; }
+details.other-lists { margin-top: 14px; }
+.other-list { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.pop.copy-box textarea { min-height: 220px; }
+.backup-list label.toggle { white-space: normal; }
 footer { margin-top: 20px; }
 `;
+
+  // src/ui/copy-box.ts
+  function copyBoxWindow({ s, t, act }) {
+    const box = s.copyBox;
+    if (!box) return null;
+    const area = el("textarea", { readonly: true, class: "copy-text", "aria-label": t("copy.byHand.title") }, box.text);
+    queueMicrotask(() => {
+      if (area.isConnected) {
+        area.focus();
+        area.select();
+      }
+    });
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.set({ copyBox: null });
+      } },
+      el(
+        "div",
+        { class: "pop copy-box", role: "dialog", "aria-modal": "true", "aria-label": t("copy.byHand.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("copy.byHand.title")),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: () => act.set({ copyBox: null }) }, "✕")
+        ),
+        el("p", { class: "note" }, t("copy.byHand.body")),
+        area
+      )
+    );
+    return back;
+  }
+
+  // src/ui/storage.ts
+  function storageWindow(v) {
+    const { s, t, act } = v;
+    const st = s.storage;
+    if (!st.open) return null;
+    const list = (s.rows ?? []).flatMap((r) => r.extension && r.extension.runtime === "client" ? [r.extension] : []);
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.closeStorage();
+      } },
+      el(
+        "div",
+        { class: "pop storage", role: "dialog", "aria-modal": "true", "aria-label": t("storage.title") },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, t("storage.title"), help(t("help.storage"))),
+          el(
+            "div",
+            { class: "row" },
+            el("button", { class: "small", type: "button", disabled: st.measuring || s.busy, onClick: () => void act.measureStorage() }, st.measuring ? t("storage.measuring") : t("storage.measure")),
+            el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: act.closeStorage }, "✕")
+          )
+        ),
+        message(st.message),
+        st.reload ? el("div", { class: "actions" }, el("span", { class: "muted" }, t("storage.reloadHint")), el("button", { class: "small primary", type: "button", onClick: act.reloadPage }, t("storage.reload"))) : null,
+        list.length ? el("ul", { class: "storage-list" }, ...list.map((x) => storageItem(v, x))) : el("p", { class: "muted" }, s.rowsError ?? t("items.empty")),
+        browserBlock(v)
+      )
+    );
+    return back;
+  }
+  function storageItem(v, x) {
+    const { s, t, act, host } = v;
+    const st = s.storage;
+    const m = st.measured.get(x.id);
+    const self = host.extensionId === null || x.id === host.extensionId;
+    const size = !m ? el("div", { class: "muted line" }, st.measuring ? t("storage.measuring") : "—") : m.status === "off" ? el("div", { class: "muted line" }, t("storage.off")) : m.status === "failed" ? el("div", { class: "muted line" }, t("storage.failed", { error: describeError(m.error, t, { name: x.name }) })) : sizeBlock(v, x, m.bytes, m.top);
+    const can = m?.status === "ok";
+    const file = el("input", {
+      type: "file",
+      accept: "application/json,.json",
+      class: "restore-file",
+      hidden: true,
+      onChange: (e) => {
+        const input = e.target;
+        const chosen = input.files?.[0];
+        input.value = "";
+        if (chosen) void chosen.text().then((text2) => act.onRestoreFile(x, text2));
+      }
+    });
+    return el(
+      "li",
+      { "data-extension": x.id },
+      el(
+        "div",
+        { class: "row between" },
+        el("span", { class: "name" }, x.name),
+        el(
+          "div",
+          { class: "row" },
+          el("button", { class: "small", type: "button", disabled: !can || s.busy, onClick: () => act.onBackup(x) }, t("storage.backup")),
+          self ? null : el("button", { class: "small", type: "button", disabled: !can || s.busy, onClick: () => file.click() }, t("storage.restore")),
+          self ? null : file,
+          self ? null : el("button", { class: "small", type: "button", disabled: !can || s.busy, onClick: () => act.startClear(x) }, t("storage.clear"))
+        )
+      ),
+      size,
+      restoreConfirm(v, x),
+      clearConfirm(v, x)
+    );
+  }
+  function sizeBlock({ t }, x, bytes, top) {
+    const share = Math.min(1, bytes / STORAGE_LIMIT_BYTES);
+    return el(
+      "div",
+      { class: "line" },
+      el(
+        "div",
+        { class: `meter${share > 0.8 ? " high" : ""}`, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(STORAGE_LIMIT_BYTES), "aria-valuenow": String(bytes), "aria-label": t("storage.of", { size: formatBytes(bytes) }) },
+        el("span", { style: `width:${(share * 100).toFixed(1)}%` })
+      ),
+      el("div", { class: "muted" }, t("storage.of", { size: formatBytes(bytes) }), ` · ${(share * 100).toFixed(1)}%`),
+      top.length ? el(
+        "details",
+        { class: "top-keys" },
+        el("summary", {}, t("storage.topKeys", { count: top.length })),
+        el("ul", {}, ...top.map((k) => el("li", {}, el("code", {}, k.key), ` ${formatBytes(k.bytes)}`)))
+      ) : null
+    );
+  }
+  function restoreConfirm({ s, t, act }, x) {
+    const r = s.storage.restore;
+    if (!r || r.id !== x.id) return null;
+    const p = r.plan;
+    return el(
+      "div",
+      { class: "msg warn restore-confirm" },
+      el("div", { style: "font-weight:600" }, t("storage.restore.title", { name: x.name, size: formatBytes(p.bytes) })),
+      p.warnings.includes("other-name") ? el("p", { class: "line" }, t("storage.restore.otherName", { from: p.from?.name ?? "?", name: x.name })) : null,
+      p.warnings.includes("other-version") ? el("p", { class: "line" }, t("storage.restore.otherVersion", { from: p.from?.version ?? "?", version: x.version ?? "?" })) : null,
+      el("p", { class: "line" }, t("storage.restore.body")),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onRestore(x) }, t("storage.restore.go")),
+        el("button", { class: "small", type: "button", onClick: act.cancelStorageQuestion }, t("action.cancel"))
+      )
+    );
+  }
+  function clearConfirm({ s, t, act }, x) {
+    const c = s.storage.clear;
+    if (!c || c.id !== x.id) return null;
+    const cancel = el("button", { class: "small", type: "button", onClick: act.cancelStorageQuestion }, t("action.cancel"));
+    if (c.step === 1) {
+      return el(
+        "div",
+        { class: "msg warn clear-confirm" },
+        el("p", { class: "line" }, t("storage.clear.first", { name: x.name })),
+        el("div", { class: "actions" }, el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: () => act.onClearBackup(x) }, t("storage.clear.backup")), cancel)
+      );
+    }
+    const box = el("input", { type: "text", class: "clear-name", "aria-label": t("storage.clear.type", { name: x.name }), placeholder: x.name, value: c.typed, "data-focus": `clear-name:${x.id}`, autocomplete: "off", spellcheck: "false" });
+    const go = el("button", { class: "small primary", type: "button", disabled: s.busy || c.typed.trim() !== x.name.trim(), onClick: () => act.onClear(x) }, t("storage.clear.go"));
+    box.addEventListener("input", () => {
+      c.typed = box.value;
+      go.disabled = s.busy || c.typed.trim() !== x.name.trim();
+    });
+    return el(
+      "div",
+      { class: "msg loud clear-confirm" },
+      el("p", { class: "line", style: "font-weight:400" }, t("storage.clear.type", { name: x.name })),
+      box,
+      el("div", { class: "actions" }, go, cancel)
+    );
+  }
+  function browserBlock({ s, t }) {
+    const b = s.storage.browser;
+    if (!b) return null;
+    return el(
+      "details",
+      { class: "browser-storage" },
+      el("summary", {}, t("storage.browser"), help(t("help.storage.browser"))),
+      b.usage !== null ? el("p", { class: "line" }, t("storage.browser.usage", { usage: formatBytes(b.usage), quota: b.quota !== null ? formatBytes(b.quota) : "?" })) : null,
+      el("div", { class: "muted line" }, "localStorage"),
+      b.local.length ? el("ul", { class: "local-groups" }, ...b.local.map((g) => el("li", {}, el("code", {}, g.name), ` ${t("storage.browser.keys", { count: g.keys })} · ${formatBytes(g.bytes)}`))) : el("p", { class: "muted" }, t("preview.none")),
+      el("div", { class: "muted line" }, "IndexedDB"),
+      b.databases === null ? el("p", { class: "muted" }, t("storage.browser.noList")) : b.databases.length ? el("ul", { class: "local-groups" }, ...b.databases.map((n) => el("li", {}, el("code", {}, n)))) : el("p", { class: "muted" }, t("preview.none"))
+    );
+  }
+
+  // src/ui/tools.ts
+  var ackBox = (label, checked, onTick, cls) => el(
+    "label",
+    { class: "toggle", style: "white-space:normal;color:inherit" },
+    el("input", { type: "checkbox", class: cls, checked, onChange: (e) => onTick(checkedOf(e)) }),
+    label
+  );
+  function reloadLine({ s, t, act }) {
+    return s.toolsReload ? el("div", { class: "actions" }, el("span", { class: "muted" }, t("switch.reloadHint")), el("button", { class: "small primary", type: "button", onClick: act.reloadPage }, t("storage.reload"))) : null;
+  }
+  function pop(v, cls, title, helpText, ...body2) {
+    const { t, act } = v;
+    const back = el(
+      "div",
+      { class: "pop-back", onClick: (e) => {
+        if (e.target === back) act.closeTools();
+      } },
+      el(
+        "div",
+        { class: `pop ${cls}`, role: "dialog", "aria-modal": "true", "aria-label": title },
+        el(
+          "div",
+          { class: "pop-head" },
+          el("h3", {}, title, help(helpText)),
+          el("button", { class: "small", type: "button", "aria-label": t("close"), onClick: act.closeTools }, "✕")
+        ),
+        ...body2
+      )
+    );
+    return back;
+  }
+  function toolsWindow(v) {
+    if (v.s.tools === "profiles") return profilesWindow(v);
+    if (v.s.tools === "bisect") return bisectWindow(v);
+    if (v.s.tools === "backup") return backupWindow(v);
+    return null;
+  }
+  function profilesWindow(v) {
+    const { s, t, act, render } = v;
+    const name = el("input", { type: "text", class: "profile-name", "aria-label": t("profiles.name"), placeholder: t("profiles.name"), "data-focus": "profile-name", maxlength: "40" });
+    const save = () => {
+      if (name.value.trim()) void act.onSaveProfile(name.value);
+    };
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save();
+      }
+    });
+    const plan = s.profilePlan;
+    return pop(
+      v,
+      "profiles",
+      t("profiles.title"),
+      t("help.profiles"),
+      el("div", { class: "row" }, name, el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: save }, t("profiles.save"))),
+      el("p", { class: "note" }, t("profiles.count", { count: s.profiles.length, max: PROFILE_LIMIT })),
+      s.profiles.length ? el("ul", { class: "catalog-list profile-list" }, ...s.profiles.map((p) => el(
+        "li",
+        { "data-profile": p.id },
+        el(
+          "div",
+          { class: "row between" },
+          el("span", {}, el("span", { class: "name" }, p.name), " ", el("span", { class: "muted" }, t("profiles.size", { count: p.ids.length }))),
+          el(
+            "div",
+            { class: "row" },
+            el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onPlanProfile(p.id) }, t("profiles.apply")),
+            el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => act.onDeleteProfile(p.id) }, t("organize.delete"))
+          )
+        ),
+        el("div", { class: "muted line" }, p.ids.map(act.nameOf).join(", ") || t("preview.none")),
+        plan?.id === p.id ? el(
+          "div",
+          { class: "msg warn profile-plan" },
+          plan.plan.off.length ? el("div", {}, t("switch.willOff", { names: plan.plan.off.map((x) => x.name).join(", ") })) : null,
+          plan.plan.on.length ? el("div", {}, t("switch.willOn", { names: plan.plan.on.map((x) => x.name).join(", ") })) : null,
+          plan.plan.needsApproval.length ? el("div", {}, t("switch.needsApproval", { names: plan.plan.needsApproval.map((x) => x.name).join(", ") })) : null,
+          plan.plan.missing.length ? el("div", {}, t("switch.missing", { count: plan.plan.missing.length })) : null,
+          !plan.plan.off.length && !plan.plan.on.length ? el("div", {}, t("switch.nothing")) : null,
+          plan.plan.fullPage ? ackBox(t("enable.ack.fullPage"), plan.ack, (on) => {
+            plan.ack = on;
+            render();
+          }, "ack-full-page") : null,
+          el(
+            "div",
+            { class: "actions" },
+            el("button", { class: "small primary", type: "button", disabled: s.busy || plan.plan.fullPage && !plan.ack || !plan.plan.off.length && !plan.plan.on.length, onClick: act.onApplyProfile }, t("profiles.apply")),
+            el("button", { class: "small", type: "button", onClick: () => act.set({ profilePlan: null }) }, t("action.cancel"))
+          )
+        ) : null
+      ))) : el("p", { class: "muted" }, t("profiles.none")),
+      message(s.toolsMessage),
+      reloadLine(v)
+    );
+  }
+  function bisectWindow(v) {
+    const { s, t, act, host, render } = v;
+    const on = (s.rows ?? []).flatMap((r) => r.extension && r.extension.enabled && r.extension.id !== host.extensionId ? [r.extension] : []);
+    const fullPage = on.some((x) => x.capabilities.includes("full_page_access"));
+    return pop(
+      v,
+      "bisect",
+      t("bisect.title"),
+      t("help.bisect"),
+      el("p", { class: "note" }, t("bisect.intro")),
+      el("p", { class: "note" }, t("bisect.limits")),
+      el("div", { class: "muted line" }, t("bisect.onNow", { count: on.length }), on.length ? ` ${on.map((x) => x.name).join(", ")}` : ""),
+      fullPage ? ackBox(t("bisect.ack"), s.bisectAck, (ok) => {
+        s.bisectAck = ok;
+        render();
+      }, "ack-full-page") : null,
+      el("div", { class: "actions" }, el("button", { class: "small primary", type: "button", disabled: s.busy || !on.length || fullPage && !s.bisectAck, onClick: act.onStartBisect }, t("bisect.start"))),
+      message(s.toolsMessage)
+    );
+  }
+  function backupWindow(v) {
+    const { s, t, act } = v;
+    const candidates = act.backupCandidates();
+    const file = el("input", {
+      type: "file",
+      accept: "application/json,.json",
+      class: "full-restore-file",
+      hidden: true,
+      onChange: (e) => {
+        const input = e.target;
+        const chosen = input.files?.[0];
+        input.value = "";
+        if (chosen) void chosen.text().then((text2) => act.onFullRestore(text2));
+      }
+    });
+    return pop(
+      v,
+      "backup",
+      t("backup.title"),
+      t("help.backup"),
+      el("p", { class: "note" }, t("backup.intro")),
+      candidates.length ? el("ul", { class: "catalog-list backup-list" }, ...candidates.map((x) => el(
+        "li",
+        {},
+        el(
+          "label",
+          { class: "toggle" },
+          el("input", { type: "checkbox", "data-focus": `backup:${x.id}`, checked: s.backupPicked.has(x.id), onChange: (e) => act.pickBackup(x.id, checkedOf(e)) }),
+          el("span", { class: "name" }, x.name)
+        )
+      ))) : el("p", { class: "muted" }, t("backup.noData")),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "small primary", type: "button", disabled: s.busy, onClick: act.onFullBackup }, t("backup.save")),
+        el("button", { class: "small", type: "button", disabled: s.busy, onClick: () => file.click() }, t("backup.restore")),
+        file
+      ),
+      el("p", { class: "note" }, t("backup.restoreNote")),
+      message(s.toolsMessage)
+    );
+  }
+  function bisectBar(v) {
+    const { s, t, act } = v;
+    const b = s.bisect;
+    if (!b) return null;
+    const small = (label, onClick, primary = false) => el("button", { class: `small${primary ? " primary" : ""}`, type: "button", disabled: s.busy, onClick }, label);
+    if (b.found !== void 0) {
+      const name = b.found ? act.nameOf(b.found) : null;
+      return el(
+        "div",
+        { class: "msg info bisect-bar" },
+        el("div", { style: "font-weight:600" }, name ? t("bisect.found", { name, steps: b.steps }) : t("bisect.notFound")),
+        el(
+          "div",
+          { class: "actions" },
+          small(t("bisect.restore"), () => act.onBisectRestore(false), !name),
+          name ? small(t("bisect.restoreWithout", { name }), () => act.onBisectRestore(true), true) : null
+        ),
+        message(s.toolsMessage),
+        reloadLine(v)
+      );
+    }
+    return el(
+      "div",
+      { class: "msg warn bisect-bar" },
+      el("div", { style: "font-weight:600" }, t("bisect.question", { left: b.suspects.length })),
+      el("div", { class: "muted line" }, t("bisect.testing", { names: b.testing.map(act.nameOf).join(", ") || t("bisect.allOff") })),
+      el(
+        "div",
+        { class: "actions" },
+        small(t("bisect.yes"), () => act.onBisectAnswer(true), true),
+        small(t("bisect.no"), () => act.onBisectAnswer(false), true),
+        small(t("bisect.stop"), () => act.onBisectRestore(false))
+      ),
+      message(s.toolsMessage),
+      reloadLine(v)
+    );
+  }
 
   // src/ui.ts
   var HOST_ELEMENT_ID = "me-fetchy";
@@ -3711,7 +6509,12 @@ footer { margin-top: 20px; }
     panel.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      if (s.bundleOpen) {
+      if (s.copyBox) act.set({ copyBox: null });
+      else if (s.wizard) act.closeWizard();
+      else if (s.storage.open) act.closeStorage();
+      else if (s.tools) act.closeTools();
+      else if (s.conflictsOpen) act.closeConflicts();
+      else if (s.bundleOpen) {
         s.bundleOpen = false;
         render();
       } else close();
@@ -3731,6 +6534,8 @@ footer { margin-top: 20px; }
       }
     };
     doc.addEventListener("keydown", onShortcut);
+    const toastSlot = el("div", { class: "toast-slot" });
+    wrapper.append(toastSlot);
     const core = {
       s,
       host,
@@ -3741,6 +6546,8 @@ footer { margin-top: 20px; }
       t,
       panel,
       render,
+      version: options.version,
+      open: () => open(),
       async guard(fn) {
         if (s.busy || s.retired) return;
         s.busy = true;
@@ -3760,16 +6567,61 @@ footer { margin-top: 20px; }
       renderPanel();
       if (key) [...panel.querySelectorAll("[data-focus]")].find((x) => x.dataset.focus === key)?.focus();
     }
+    const pending = () => stillNewer(s.peeked, s.records, options.version);
     function renderPanel() {
+      const waiting = pending();
+      anchor.setDot(s.records.some(hasUpdate) || waiting.length > 0, t("anchor.hasUpdate"));
+      toastSlot.replaceChildren(fragment(toast()));
       backdrop.hidden = !isOpen;
       panel.replaceChildren(fragment(
         header(),
+        bisectBar(view),
+        selfLine(),
         gateLine(view),
         installSection(view),
         s.prepared ? previewSection(view, s.prepared) : null,
         itemsSection(view),
-        bundleWindow(view)
+        bundleWindow(view),
+        storageWindow(view),
+        toolsWindow(view),
+        conflictsWindow(view),
+        copyBoxWindow(view),
+        wizardWindow(view)
       ));
+    }
+    function toast() {
+      if (isOpen) return null;
+      if (s.bisect && !s.toast) {
+        return el(
+          "div",
+          { class: "toast", role: "status" },
+          el("div", {}, el("strong", {}, t(s.bisect.found !== void 0 ? "bisect.toast.done" : "bisect.toast"))),
+          el("div", { class: "actions" }, el("button", { class: "small primary", type: "button", onClick: () => open() }, t("notify.open")))
+        );
+      }
+      if (!s.toast) return null;
+      const names2 = s.toast.map((p) => `${p.key === SELF_KEY ? "Fetchy" : s.records.find((r) => r.id === p.key)?.name ?? "?"} ${p.version}`).join(", ");
+      return el(
+        "div",
+        { class: "toast", role: "status", "aria-live": "polite" },
+        el("div", {}, el("strong", {}, t("notify.title", { count: s.toast.length })), " ", el("span", { class: "muted" }, names2)),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "small primary", type: "button", onClick: act.openFromToast }, t("notify.open")),
+          el("button", { class: "small", type: "button", onClick: act.dismissToast }, t("notify.later"))
+        )
+      );
+    }
+    function selfLine() {
+      const self = pending().find((p) => p.key === SELF_KEY);
+      if (!self) return null;
+      return el(
+        "div",
+        { class: "msg info self-update row between" },
+        el("span", {}, t("self.newVersion", { version: self.version })),
+        el("button", { class: "small", type: "button", disabled: s.busy, onClick: act.addSelfSource }, t("self.addSource"))
+      );
     }
     function header() {
       const updates = catalogUpdates(s.rows);
@@ -3801,13 +6653,18 @@ footer { margin-top: 20px; }
     }
     function open() {
       isOpen = true;
+      s.toast = null;
       render();
       panel.focus();
       void Promise.all([act.loadPolicy(), act.loadRows(), act.loadLog(), act.reconcileRecords()]).then(() => {
+        if (!wizardDone && !s.wizard && s.records.length === 0) {
+          wizardDone = true;
+          act.openWizard();
+        }
         render();
         const due = (r) => checkedLongAgo(r, /* @__PURE__ */ new Date(), OPEN_CHECK_EVERY_MS);
-        if (s.autoCheck && s.records.some(due) && !s.busy) void act.checkRecords(due).then(() => act.runAutoUpdates(false));
-        else void act.checkCatalogQuietly().then(() => render());
+        const checks = s.autoCheck && s.records.some(due) && !s.busy ? act.checkRecords(due).then(() => act.runAutoUpdates(false)) : act.checkCatalogQuietly().then(() => render());
+        void checks.then(() => act.lookAtReposQuietly());
       });
     }
     function close() {
@@ -3822,6 +6679,9 @@ footer { margin-top: 20px; }
       if (isOpen) close();
       else open();
     }
+    let notifyCheckedAt = null;
+    let wizardDone = false;
+    let notifyTimer = null;
     const ready = (async () => {
       try {
         const data = await host.storage.get();
@@ -3830,12 +6690,45 @@ footer { margin-top: 20px; }
         s.autoUpdatedAt = typeof data.autoUpdatedAt === "string" ? Date.parse(data.autoUpdatedAt) || 0 : 0;
         s.keepEnabled = data.keepEnabled === true;
         s.organize = normalizeOrganize(data.organize);
+        s.notify = data.notifyUpdates !== false;
+        wizardDone = data.wizardDone === true;
+        s.profiles = parseProfiles(data.profiles);
+        s.lists = parseStoredLists(data.catalogs);
+        s.bisect = parseBisect(data.bisect);
+        s.peeked = parsePeeked(data.peeked);
+        notifyCheckedAt = typeof data.notifyCheckedAt === "string" ? data.notifyCheckedAt : null;
       } catch {
       }
       await Promise.all([act.loadPolicy(), act.loadRecords()]);
       render();
-      if (s.records.some((r) => r.autoUpdate) && Date.now() - s.autoUpdatedAt > 6 * 36e5) void act.runAutoUpdates(true);
+      if (s.records.some((r) => r.autoUpdate) && !s.bisect && Date.now() - s.autoUpdatedAt > 6 * 36e5) void act.runAutoUpdates(true);
+      if (s.notify && lookDue(notifyCheckedAt, Date.now())) {
+        notifyTimer = setTimeout(() => {
+          notifyTimer = null;
+          void lookForUpdates();
+        }, options.notifyDelayMs ?? NOTIFY_DELAY_MS);
+      }
     })();
+    async function lookForUpdates() {
+      if (!s.notify || s.retired) return;
+      try {
+        const records = await store.load();
+        const found = await peekUpdates(records, host.fetch, options.version);
+        const data = await host.storage.get();
+        const fresh = isOpen ? [] : unnoticed(found, parseNoticed(data.noticed), records);
+        s.peeked = found;
+        notifyCheckedAt = (/* @__PURE__ */ new Date()).toISOString();
+        await host.storage.patch({
+          notifyCheckedAt,
+          peeked: found,
+          ...fresh.length ? { noticed: rememberNoticed(parseNoticed(data.noticed), fresh, records) } : {}
+        });
+        if (fresh.length) s.toast = fresh;
+        render();
+      } catch (e) {
+        host.log.debug("update notice skipped", e);
+      }
+    }
     render();
     return {
       root,
@@ -3848,15 +6741,20 @@ footer { margin-top: 20px; }
         return anchor.attached;
       },
       destroy() {
+        if (notifyTimer) clearTimeout(notifyTimer);
         anchor.destroy();
         doc.removeEventListener("keydown", onShortcut);
         hostElement.remove();
       }
     };
   }
+  function parsePeeked(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((p) => !!p && typeof p === "object" && typeof p.key === "string" && typeof p.version === "string");
+  }
 
   // src/index.ts
-  var VERSION = true ? "0.8.3" : "0.0.0";
+  var VERSION = true ? "0.9.0" : "0.0.0";
   function boot() {
     const api = typeof marinara !== "undefined" ? marinara : void 0;
     const host = hostFromMarinara(api);
